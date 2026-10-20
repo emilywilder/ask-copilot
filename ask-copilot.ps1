@@ -121,16 +121,37 @@ begin {
     if ($Glow -notin 'auto', 'on', 'off') { throw "-Glow must be auto, on or off (got '$Glow')." }
     $invocation = $MyInvocation
 
+    Set-StrictMode -Version Latest
+    $ErrorActionPreference = 'Stop'
+    $piped = [System.Collections.Generic.List[string]]::new()
+
+    # ---- Prompt ----------------------------------------------------------------------------
+
+    # Puts any piped context under the question and appends the answer-format instruction.
+    function New-Prompt([string] $Text, [string] $Context) {
+        $nl = [Environment]::NewLine
+        $prompt = if ($Context) {
+            if ($Text) { "$Text$nl$nl$Context" } else { $Context }
+        } else { $Text }
+
+        $prompt + "$nl$nl---$nl" +
+            'Answer from your own knowledge: you have no tools and no access to any files. ' +
+            'Format your entire response as GitHub-flavored Markdown. Put all code, commands and ' +
+            'file contents in fenced code blocks with a language tag. Do not wrap the whole response in a code block.'
+    }
+
+    # ---- glow ------------------------------------------------------------------------------
+
     # True only when this script is a bare statement whose output goes straight to the host:
     # not piped, not redirected (> file), not assigned ($x = ...), not inside ( ) or $( ).
-    function Test-OutputToTerminal {
+    function Test-OutputToTerminal([System.Management.Automation.InvocationInfo] $Invocation) {
         if ([Console]::IsOutputRedirected) { return $false }
-        $line = "$($invocation.Line)"
-        $statement = "$($invocation.Statement)".Trim()
+        $line = "$($Invocation.Line)"
+        $statement = "$($Invocation.Statement)".Trim()
         # pwsh -File ask-copilot.ps1 ... from another shell: no source line, and the console
         # redirect check above already caught "| more" or "> file" in that shell.
         if (-not $line.Trim() -and -not $statement) { return $true }
-        if ($invocation.PipelineLength -gt 1) { return $false }
+        if ($Invocation.PipelineLength -gt 1) { return $false }
         if (-not $statement) { return $false }
 
         $tokens = $parseErrors = $null
@@ -154,6 +175,15 @@ begin {
         if ($g) { $g.Source }
     }
 
+    # Returns the glow executable to render with, or nothing if the answer should stay raw Markdown.
+    function Get-GlowPath([string] $Mode, [System.Management.Automation.InvocationInfo] $Invocation) {
+        if ($Mode -eq 'off') { return }
+        $glowPath = Resolve-Glow
+        if (-not $glowPath -and $Mode -eq 'on') { Write-Warning 'glow not found on PATH; showing raw Markdown.' }
+        if ($glowPath -and $Mode -eq 'auto' -and -not (Test-OutputToTerminal $Invocation)) { return }
+        $glowPath
+    }
+
     # Renders Markdown with glow directly on the console (so glow sees a real terminal).
     # Returns $false if glow failed, so the caller can fall back to raw Markdown.
     function Invoke-Glow([string] $GlowPath, [string] $Markdown) {
@@ -172,9 +202,7 @@ begin {
         finally { $g.Dispose() }
     }
 
-    Set-StrictMode -Version Latest
-    $ErrorActionPreference = 'Stop'
-    $piped = [System.Collections.Generic.List[string]]::new()
+    # ---- Copilot CLI -----------------------------------------------------------------------
 
     function Resolve-CopilotExecutable {
         $candidates = @(Get-Command -Name copilot -CommandType Application -All -ErrorAction SilentlyContinue)
@@ -201,34 +229,85 @@ begin {
                'Install the native build instead: winget install GitHub.Copilot')
     }
 
+    # Builds Copilot's command-line arguments. The mandatory lockdown flags are always passed;
+    # optional hardening flags are probed for so the script keeps working across CLI versions.
+    function New-CopilotArgumentList([string] $Exe, [string] $Prompt, [string] $Model) {
+        $cliHelpText = (& $Exe --help 2>&1 | Out-String)
+        $hasFlag = { param($f) $cliHelpText -match "(?<![\w-])$([regex]::Escape($f))(?![\w-])" }
+
+        $cliArgs = [System.Collections.Generic.List[string]]::new()
+        # Use the --prompt=VALUE form so a question that starts with '-' can't be read as a flag.
+        if (& $hasFlag '--prompt') { $cliArgs.Add("--prompt=$Prompt") }
+        else { $cliArgs.Add('-p'); $cliArgs.Add($(if ($Prompt.StartsWith('-')) { " $Prompt" } else { $Prompt })) }
+        $cliArgs.Add('--silent')
+        $cliArgs.Add('--no-ask-user')
+        $cliArgs.Add('--no-custom-instructions')
+        $cliArgs.Add('--deny-tool=shell,write,read,url,memory,github')
+        foreach ($f in '--disable-builtin-mcps', '--no-auto-update', '--disable-client-telemetry', '--no-color') {
+            if (& $hasFlag $f) { $cliArgs.Add($f) }
+        }
+        if ($Model) { $cliArgs.Add("--model=$Model") }
+        $cliArgs
+    }
+
+    # Strips anything from Copilot's environment that could grant permissions, change providers
+    # or supply another credential, and points it at its own empty home.
+    # The token is set separately by the caller so it is never passed as a command argument.
+    function Initialize-CopilotEnvironment([System.Diagnostics.ProcessStartInfo] $StartInfo, [string] $CopilotHome) {
+        $strip = @($StartInfo.Environment.Keys | Where-Object {
+            $_ -like 'COPILOT_*' -or $_ -like 'GITHUB_COPILOT_*' -or
+            $_ -in 'GH_TOKEN', 'GITHUB_TOKEN', 'GH_ENTERPRISE_TOKEN', 'GITHUB_ENTERPRISE_TOKEN', 'GH_HOST'
+        })
+        foreach ($k in $strip) { [void]$StartInfo.Environment.Remove($k) }
+
+        $StartInfo.Environment['COPILOT_HOME'] = $CopilotHome
+        $StartInfo.Environment['COPILOT_AUTO_UPDATE'] = 'false'
+    }
+
+    # Deletes the temporary working directory, retrying briefly while Copilot releases its files.
+    function Remove-TempRoot([string] $Path) {
+        if (-not (Test-Path -LiteralPath $Path)) { return }
+        for ($i = 0; $i -lt 5; $i++) {
+            try { Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction Stop; break }
+            catch { Start-Sleep -Milliseconds 200 }
+        }
+    }
+
+    # ---- Token -----------------------------------------------------------------------------
+
+    function Read-OpToken([string] $Reference) {
+        if (-not $Reference.StartsWith('op://')) { throw "-OpReference must look like op://vault/item/field." }
+        $op = Get-Command -Name op -CommandType Application -ErrorAction SilentlyContinue |
+            Where-Object { -not $IsWindows -or $_.Extension -eq '.exe' } | Select-Object -First 1
+        if (-not $op) { throw '1Password CLI (op) not found on PATH. Install it with: winget install AgileBits.1Password.CLI' }
+        $value = & $op.Source read --no-newline -- $Reference
+        if ($LASTEXITCODE -ne 0 -or -not $value) { throw "op could not read $Reference (exit $LASTEXITCODE)." }
+        $secure = ConvertTo-SecureString -String ([string]$value) -AsPlainText -Force
+        $value = $null
+        return $secure
+    }
+
+    function Get-VaultToken([string] $Name, [string] $VaultName) {
+        Import-Module Microsoft.PowerShell.SecretManagement -ErrorAction Stop
+        $vaultInfo = if ($VaultName) { Get-SecretVault -Name $VaultName } else {
+            Get-SecretVault | Where-Object IsDefault | Select-Object -First 1
+        }
+        if (-not $vaultInfo) { throw 'No SecretManagement vault specified and no default vault is registered.' }
+        if ($vaultInfo.ModuleName -eq 'Microsoft.PowerShell.SecretStore') {
+            throw "Vault '$($vaultInfo.Name)' is a local SecretStore, which saves secrets to a file on this machine. Use a remote vault or omit -SecretName to be prompted."
+        }
+        $secret = Get-Secret -Name $Name -Vault $vaultInfo.Name
+        if ($secret -is [pscredential]) { $secret = $secret.Password }
+        if ($secret -is [string]) { $secret = ConvertTo-SecureString -String $secret -AsPlainText -Force }
+        if ($secret -isnot [securestring]) { throw "Secret '$Name' is not a string, SecureString or PSCredential." }
+        return $secret
+    }
+
     function Get-CopilotToken {
         if ($OpReference -and $SecretName) { throw 'Use either -OpReference or -SecretName, not both.' }
-        if ($OpReference) {
-            if (-not $OpReference.StartsWith('op://')) { throw "-OpReference must look like op://vault/item/field." }
-            $op = Get-Command -Name op -CommandType Application -ErrorAction SilentlyContinue |
-                Where-Object { -not $IsWindows -or $_.Extension -eq '.exe' } | Select-Object -First 1
-            if (-not $op) { throw '1Password CLI (op) not found on PATH. Install it with: winget install AgileBits.1Password.CLI' }
-            $value = & $op.Source read --no-newline -- $OpReference
-            if ($LASTEXITCODE -ne 0 -or -not $value) { throw "op could not read $OpReference (exit $LASTEXITCODE)." }
-            $secure = ConvertTo-SecureString -String ([string]$value) -AsPlainText -Force
-            $value = $null
-            return $secure
-        }
-        if ($SecretName) {
-            Import-Module Microsoft.PowerShell.SecretManagement -ErrorAction Stop
-            $vaultInfo = if ($Vault) { Get-SecretVault -Name $Vault } else {
-                Get-SecretVault | Where-Object IsDefault | Select-Object -First 1
-            }
-            if (-not $vaultInfo) { throw 'No SecretManagement vault specified and no default vault is registered.' }
-            if ($vaultInfo.ModuleName -eq 'Microsoft.PowerShell.SecretStore') {
-                throw "Vault '$($vaultInfo.Name)' is a local SecretStore, which saves secrets to a file on this machine. Use a remote vault or omit -SecretName to be prompted."
-            }
-            $secret = Get-Secret -Name $SecretName -Vault $vaultInfo.Name
-            if ($secret -is [pscredential]) { $secret = $secret.Password }
-            if ($secret -is [string]) { $secret = ConvertTo-SecureString -String $secret -AsPlainText -Force }
-            if ($secret -isnot [securestring]) { throw "Secret '$SecretName' is not a string, SecureString or PSCredential." }
-            return $secret
-        }
+        if ($OpReference) { return Read-OpToken $OpReference }
+        if ($SecretName) { return Get-VaultToken $SecretName $Vault }
+
         $secure = Read-Host -Prompt 'GitHub fine-grained token (Copilot Requests permission)' -AsSecureString
         if ($secure.Length -eq 0) { throw 'No token entered.' }
         return $secure
@@ -252,42 +331,11 @@ end {
         $q = (Read-Host -Prompt 'Question').Trim()
     }
     if (-not $q -and -not $context) { throw 'No question given.' }
+    $prompt = New-Prompt $q $context
 
-    $prompt = if ($context) {
-        if ($q) { "$q$([Environment]::NewLine)$([Environment]::NewLine)$context" } else { $context }
-    } else { $q }
-
-    $nl = [Environment]::NewLine
-    $prompt += "$nl$nl---$nl" +
-        'Answer from your own knowledge: you have no tools and no access to any files. ' +
-        'Format your entire response as GitHub-flavored Markdown. Put all code, commands and ' +
-        'file contents in fenced code blocks with a language tag. Do not wrap the whole response in a code block.'
-
-    $glowPath = $null
-    if ($Glow -ne 'off') {
-        $glowPath = Resolve-Glow
-        if (-not $glowPath -and $Glow -eq 'on') { Write-Warning 'glow not found on PATH; showing raw Markdown.' }
-        if ($glowPath -and $Glow -eq 'auto' -and -not (Test-OutputToTerminal)) { $glowPath = $null }
-    }
-
+    $glowPath = Get-GlowPath $Glow $invocation
     $exe = Resolve-CopilotExecutable
-
-    # Probe for optional hardening flags so the script keeps working across CLI versions.
-    $cliHelpText = (& $exe --help 2>&1 | Out-String)
-    $hasFlag = { param($f) $cliHelpText -match "(?<![\w-])$([regex]::Escape($f))(?![\w-])" }
-
-    $cliArgs = [System.Collections.Generic.List[string]]::new()
-    # Use the --prompt=VALUE form so a question that starts with '-' can't be read as a flag.
-    if (& $hasFlag '--prompt') { $cliArgs.Add("--prompt=$prompt") }
-    else { $cliArgs.Add('-p'); $cliArgs.Add($(if ($prompt.StartsWith('-')) { " $prompt" } else { $prompt })) }
-    $cliArgs.Add('--silent')
-    $cliArgs.Add('--no-ask-user')
-    $cliArgs.Add('--no-custom-instructions')
-    $cliArgs.Add('--deny-tool=shell,write,read,url,memory,github')
-    foreach ($f in '--disable-builtin-mcps', '--no-auto-update', '--disable-client-telemetry', '--no-color') {
-        if (& $hasFlag $f) { $cliArgs.Add($f) }
-    }
-    if ($Model) { $cliArgs.Add("--model=$Model") }
+    $cliArgs = New-CopilotArgumentList $exe $prompt $Model
 
     $root = Join-Path ([IO.Path]::GetTempPath()) ("ask-copilot-" + [guid]::NewGuid().ToString('N'))
     $copilotHome = Join-Path $root 'home'
@@ -313,16 +361,7 @@ end {
         # Capture stdout so the answer goes to the PowerShell pipeline; stderr (errors) still goes to the console.
         $psi.RedirectStandardOutput = $true
         $psi.StandardOutputEncoding = [System.Text.UTF8Encoding]::new($false)
-
-        # Strip anything that could grant permissions, change providers or supply another credential.
-        $strip = @($psi.Environment.Keys | Where-Object {
-            $_ -like 'COPILOT_*' -or $_ -like 'GITHUB_COPILOT_*' -or
-            $_ -in 'GH_TOKEN', 'GITHUB_TOKEN', 'GH_ENTERPRISE_TOKEN', 'GITHUB_ENTERPRISE_TOKEN', 'GH_HOST'
-        })
-        foreach ($k in $strip) { [void]$psi.Environment.Remove($k) }
-
-        $psi.Environment['COPILOT_HOME'] = $copilotHome
-        $psi.Environment['COPILOT_AUTO_UPDATE'] = 'false'
+        Initialize-CopilotEnvironment $psi $copilotHome
         $psi.Environment['COPILOT_GITHUB_TOKEN'] = $token
 
         $proc = [System.Diagnostics.Process]::Start($psi)
@@ -351,11 +390,6 @@ end {
         $token = $null
         if ($proc -and -not $proc.HasExited) { try { $proc.Kill($true) } catch { } }
         if ($proc) { $proc.Dispose() }
-        if (Test-Path -LiteralPath $root) {
-            for ($i = 0; $i -lt 5; $i++) {
-                try { Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction Stop; break }
-                catch { Start-Sleep -Milliseconds 200 }
-            }
-        }
+        Remove-TempRoot $root
     }
 }
