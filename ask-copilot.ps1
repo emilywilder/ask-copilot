@@ -18,6 +18,9 @@
     Authentication uses a fine-grained personal access token with only the "Copilot Requests"
     account permission. The token is never written to disk:
       * By default you paste it at a masked prompt on each run (kept as a SecureString).
+      * Or use -OpReference to read it from 1Password with the `op` CLI (op://vault/item/field).
+        With the 1Password desktop app's CLI integration on, op unlocks via Windows Hello and
+        keeps no session token on disk.
       * Or use -SecretName to pull it from a PowerShell SecretManagement vault. Use a remote
         vault (e.g. Azure Key Vault, 1Password, Bitwarden). The local SecretStore vault is
         refused because it saves secrets to a file on this machine.
@@ -40,6 +43,10 @@
 .PARAMETER Model
     Optional model name, e.g. claude-sonnet-4.5 or gpt-5. Defaults to the Copilot CLI default.
 
+.PARAMETER OpReference
+    1Password secret reference for the token, e.g. "op://Private/GitHub Copilot PAT/credential".
+    Can also be set once in your profile via $env:ASK_COPILOT_OP_REF (the reference is not a secret).
+
 .PARAMETER SecretName
     Name of a SecretManagement secret holding the token. If omitted, you are prompted for it.
 
@@ -53,6 +60,9 @@
     git diff | ask-copilot -Model gpt-5 review this diff
 
 .EXAMPLE
+    ask-copilot -OpReference "op://Private/GitHub Copilot PAT/credential" what is a monad
+
+.EXAMPLE
     ask-copilot -SecretName CopilotToken -Vault AzKV "what is a monad"
 #>
 [CmdletBinding()]
@@ -64,6 +74,8 @@ param(
     [string] $InputObject,
 
     [string] $Model,
+
+    [string] $OpReference = $env:ASK_COPILOT_OP_REF,
 
     [string] $SecretName,
 
@@ -101,6 +113,18 @@ begin {
     }
 
     function Get-CopilotToken {
+        if ($OpReference -and $SecretName) { throw 'Use either -OpReference or -SecretName, not both.' }
+        if ($OpReference) {
+            if (-not $OpReference.StartsWith('op://')) { throw "-OpReference must look like op://vault/item/field." }
+            $op = Get-Command -Name op -CommandType Application -ErrorAction SilentlyContinue |
+                Where-Object { -not $IsWindows -or $_.Extension -eq '.exe' } | Select-Object -First 1
+            if (-not $op) { throw '1Password CLI (op) not found on PATH. Install it with: winget install AgileBits.1Password.CLI' }
+            $value = & $op.Source read --no-newline -- $OpReference
+            if ($LASTEXITCODE -ne 0 -or -not $value) { throw "op could not read $OpReference (exit $LASTEXITCODE)." }
+            $secure = ConvertTo-SecureString -String ([string]$value) -AsPlainText -Force
+            $value = $null
+            return $secure
+        }
         if ($SecretName) {
             Import-Module Microsoft.PowerShell.SecretManagement -ErrorAction Stop
             $vaultInfo = if ($Vault) { Get-SecretVault -Name $Vault } else {
