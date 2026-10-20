@@ -16,6 +16,12 @@
       * No permission overrides: every inherited COPILOT_* variable (e.g. COPILOT_ALLOW_ALL)
         and every other GitHub token variable is removed from Copilot's environment.
 
+    Output is always Markdown. It is written to the pipeline as lines of text, so it can be
+    piped, redirected or captured (ask-copilot q | Set-Content answer.md, $x = ask-copilot q).
+    When glow (https://github.com/charmbracelet/glow) is installed and the output is going
+    straight to the terminal, it is rendered with glow; anything piped, redirected or captured
+    always gets the raw Markdown. Control this with -Glow.
+
     Authentication uses a fine-grained personal access token with only the "Copilot Requests"
     account permission. The token is never written to disk:
       * By default you paste it at a masked prompt on each run (kept as a SecureString).
@@ -54,6 +60,15 @@
 .PARAMETER Vault
     SecretManagement vault to read -SecretName from. Defaults to your default vault.
 
+.PARAMETER Glow
+    Render the Markdown answer with glow: auto (default), on or off.
+      auto  use glow if it is installed and the output is going straight to the terminal
+      on    always render with glow on the terminal, even when piped or captured
+            (glow draws directly on the console, so nothing is sent down the pipe)
+      off   never use glow; always emit raw Markdown
+    Set a default with $env:ASK_COPILOT_GLOW. While glow is used the answer appears when
+    Copilot finishes rather than streaming.
+
 .PARAMETER Help
     Show this usage information and exit. Also available as -h, --help or /? (on their own).
 
@@ -62,6 +77,9 @@
 
 .EXAMPLE
     git diff | ask-copilot -Model gpt-5 review this diff
+
+.EXAMPLE
+    ask-copilot -Glow off explain git rebase | Set-Content rebase.md
 
 .EXAMPLE
     ask-copilot -OpReference "op://Private/GitHub Copilot PAT/credential" what is a monad
@@ -85,6 +103,8 @@ param(
 
     [string] $Vault,
 
+    [string] $Glow = $(if ($env:ASK_COPILOT_GLOW) { $env:ASK_COPILOT_GLOW } else { 'auto' }),
+
     [Alias('h', '-help')]
     [switch] $Help
 )
@@ -95,6 +115,61 @@ begin {
         # Out-String first: help objects emitted from inside a script render blank.
         Get-Help -Name $PSCommandPath -Detailed | Out-String
         exit 0
+    }
+
+    $Glow = $Glow.Trim().ToLowerInvariant()
+    if ($Glow -notin 'auto', 'on', 'off') { throw "-Glow must be auto, on or off (got '$Glow')." }
+    $invocation = $MyInvocation
+
+    # True only when this script is a bare statement whose output goes straight to the host:
+    # not piped, not redirected (> file), not assigned ($x = ...), not inside ( ) or $( ).
+    function Test-OutputToTerminal {
+        if ([Console]::IsOutputRedirected) { return $false }
+        $line = "$($invocation.Line)"
+        $statement = "$($invocation.Statement)".Trim()
+        # pwsh -File ask-copilot.ps1 ... from another shell: no source line, and the console
+        # redirect check above already caught "| more" or "> file" in that shell.
+        if (-not $line.Trim() -and -not $statement) { return $true }
+        if ($invocation.PipelineLength -gt 1) { return $false }
+        if (-not $statement) { return $false }
+
+        $tokens = $parseErrors = $null
+        $ast = [System.Management.Automation.Language.Parser]::ParseInput($line, [ref]$tokens, [ref]$parseErrors)
+        if ($parseErrors) { return $false }
+        # Find this invocation's command in the line, then look at what contains it.
+        $cmd = $ast.FindAll({ param($n)
+                $n -is [System.Management.Automation.Language.CommandAst] -and $n.Extent.Text.Trim() -eq $statement
+            }, $true) | Select-Object -First 1
+        if (-not $cmd) { return $false }
+        if ($cmd.Redirections.Count -gt 0) { return $false }
+        $pipeline = $cmd.Parent
+        if ($pipeline -isnot [System.Management.Automation.Language.PipelineAst] -or $pipeline.PipelineElements.Count -ne 1) { return $false }
+        # A bare statement sits directly in a script/statement block; assignments, ( ), $( ) and @( ) do not.
+        return ($pipeline.Parent -is [System.Management.Automation.Language.NamedBlockAst] -or
+                $pipeline.Parent -is [System.Management.Automation.Language.StatementBlockAst])
+    }
+
+    function Resolve-Glow {
+        $g = Get-Command -Name glow -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($g) { $g.Source }
+    }
+
+    # Renders Markdown with glow directly on the console (so glow sees a real terminal).
+    # Returns $false if glow failed, so the caller can fall back to raw Markdown.
+    function Invoke-Glow([string] $GlowPath, [string] $Markdown) {
+        $gsi = [System.Diagnostics.ProcessStartInfo]::new($GlowPath)
+        $gsi.ArgumentList.Add('-')
+        $gsi.UseShellExecute = $false
+        $gsi.RedirectStandardInput = $true
+        $gsi.StandardInputEncoding = [System.Text.UTF8Encoding]::new($false)
+        $g = [System.Diagnostics.Process]::Start($gsi)
+        try {
+            $g.StandardInput.Write($Markdown)
+            $g.StandardInput.Close()
+            $g.WaitForExit()
+            return ($g.ExitCode -eq 0)
+        }
+        finally { $g.Dispose() }
     }
 
     Set-StrictMode -Version Latest
@@ -182,6 +257,19 @@ end {
         if ($q) { "$q$([Environment]::NewLine)$([Environment]::NewLine)$context" } else { $context }
     } else { $q }
 
+    $nl = [Environment]::NewLine
+    $prompt += "$nl$nl---$nl" +
+        'Answer from your own knowledge: you have no tools and no access to any files. ' +
+        'Format your entire response as GitHub-flavored Markdown. Put all code, commands and ' +
+        'file contents in fenced code blocks with a language tag. Do not wrap the whole response in a code block.'
+
+    $glowPath = $null
+    if ($Glow -ne 'off') {
+        $glowPath = Resolve-Glow
+        if (-not $glowPath -and $Glow -eq 'on') { Write-Warning 'glow not found on PATH; showing raw Markdown.' }
+        if ($glowPath -and $Glow -eq 'auto' -and -not (Test-OutputToTerminal)) { $glowPath = $null }
+    }
+
     $exe = Resolve-CopilotExecutable
 
     # Probe for optional hardening flags so the script keeps working across CLI versions.
@@ -196,7 +284,7 @@ end {
     $cliArgs.Add('--no-ask-user')
     $cliArgs.Add('--no-custom-instructions')
     $cliArgs.Add('--deny-tool=shell,write,read,url,memory,github')
-    foreach ($f in '--disable-builtin-mcps', '--no-auto-update', '--disable-client-telemetry') {
+    foreach ($f in '--disable-builtin-mcps', '--no-auto-update', '--disable-client-telemetry', '--no-color') {
         if (& $hasFlag $f) { $cliArgs.Add($f) }
     }
     if ($Model) { $cliArgs.Add("--model=$Model") }
@@ -222,6 +310,9 @@ end {
         foreach ($a in $cliArgs) { $psi.ArgumentList.Add($a) }
         $psi.UseShellExecute = $false
         $psi.WorkingDirectory = $workDir
+        # Capture stdout so the answer goes to the PowerShell pipeline; stderr (errors) still goes to the console.
+        $psi.RedirectStandardOutput = $true
+        $psi.StandardOutputEncoding = [System.Text.UTF8Encoding]::new($false)
 
         # Strip anything that could grant permissions, change providers or supply another credential.
         $strip = @($psi.Environment.Keys | Where-Object {
@@ -237,7 +328,22 @@ end {
         $proc = [System.Diagnostics.Process]::Start($psi)
         $psi.Environment['COPILOT_GITHUB_TOKEN'] = $null
         $token = $null
-        $proc.WaitForExit()
+
+        if ($glowPath) {
+            # glow needs the whole document, so buffer it, then render.
+            $markdown = $proc.StandardOutput.ReadToEnd()
+            $proc.WaitForExit()
+            if ($markdown.Trim()) {
+                $rendered = $false
+                try { $rendered = Invoke-Glow $glowPath $markdown } catch { Write-Warning "glow failed: $_" }
+                if (-not $rendered) { $markdown -split '\r?\n' }
+            }
+        }
+        else {
+            # Stream line by line so downstream commands get output as it arrives.
+            while ($null -ne ($outLine = $proc.StandardOutput.ReadLine())) { $outLine }
+            $proc.WaitForExit()
+        }
         $global:LASTEXITCODE = $proc.ExitCode
         if ($proc.ExitCode -ne 0) { exit $proc.ExitCode }
     }
