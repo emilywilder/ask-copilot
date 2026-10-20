@@ -1,5 +1,6 @@
 #!/usr/bin/env pwsh
 #Requires -Version 7.2
+
 <#
 .SYNOPSIS
     Ask GitHub Copilot a question from the terminal. Copilot gets no tools and no credentials touch disk.
@@ -53,6 +54,9 @@
 .PARAMETER Vault
     SecretManagement vault to read -SecretName from. Defaults to your default vault.
 
+.PARAMETER Help
+    Show this usage information and exit. Also available as -h, --help or /? (on their own).
+
 .EXAMPLE
     ask-copilot how do I reverse a list in python
 
@@ -79,10 +83,20 @@ param(
 
     [string] $SecretName,
 
-    [string] $Vault
+    [string] $Vault,
+
+    [Alias('h', '-help')]
+    [switch] $Help
 )
 
 begin {
+    # Inside PowerShell, "--help" arrives as plain text, so also accept it (or /?) as the only argument.
+    if ($Help -or ($Question -and $Question.Count -eq 1 -and $Question[0] -in '--help', '/?')) {
+        # Out-String first: help objects emitted from inside a script render blank.
+        Get-Help -Name $PSCommandPath -Detailed | Out-String
+        exit 0
+    }
+
     Set-StrictMode -Version Latest
     $ErrorActionPreference = 'Stop'
     $piped = [System.Collections.Generic.List[string]]::new()
@@ -158,21 +172,21 @@ process {
 
 end {
     $q = (@($Question) -join ' ').Trim()
-    if (-not $q -and $piped.Count -eq 0) {
+    $context = ($piped -join [Environment]::NewLine).Trim()
+    if (-not $q -and -not $context) {
         $q = (Read-Host -Prompt 'Question').Trim()
     }
-    if (-not $q -and $piped.Count -eq 0) { throw 'No question given.' }
+    if (-not $q -and -not $context) { throw 'No question given.' }
 
-    $prompt = if ($piped.Count -gt 0) {
-        $context = $piped -join [Environment]::NewLine
+    $prompt = if ($context) {
         if ($q) { "$q$([Environment]::NewLine)$([Environment]::NewLine)$context" } else { $context }
     } else { $q }
 
     $exe = Resolve-CopilotExecutable
 
     # Probe for optional hardening flags so the script keeps working across CLI versions.
-    $help = (& $exe --help 2>&1 | Out-String)
-    $hasFlag = { param($f) $help -match "(?<![\w-])$([regex]::Escape($f))(?![\w-])" }
+    $cliHelpText = (& $exe --help 2>&1 | Out-String)
+    $hasFlag = { param($f) $cliHelpText -match "(?<![\w-])$([regex]::Escape($f))(?![\w-])" }
 
     $cliArgs = [System.Collections.Generic.List[string]]::new()
     # Use the --prompt=VALUE form so a question that starts with '-' can't be read as a flag.
