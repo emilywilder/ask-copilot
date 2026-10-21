@@ -30,6 +30,29 @@ Describe 'Script file' {
         (Get-Help $AskCopilot).Synopsis | Should -BeLike 'Ask GitHub Copilot a question from the terminal*'
     }
 
+    It 'documents strings as its pipeline input' {
+        (Get-Help $AskCopilot -Full).inputTypes.inputType.type.name | Should -Match '^System\.String'
+    }
+
+    It 'documents strings as its output, in help and in OutputType' {
+        (Get-Help $AskCopilot -Full).returnValues.returnValue.type.name | Should -Match '^System\.String'
+        (Get-Command $AskCopilot).OutputType.Type | Should -Be @([string])
+    }
+
+    It 'has notes covering requirements and verbose output' {
+        $notes = ((Get-Help $AskCopilot -Full).alertSet.alert.Text -join "`n")
+        $notes | Should -Match 'PowerShell 7\.2 or later'
+        $notes | Should -Match 'winget install GitHub\.Copilot'
+        $notes | Should -Match 'neither ever shows the token'
+    }
+
+    It 'links to the project first, so Get-Help -Online opens it' {
+        $links = @((Get-Help $AskCopilot -Full).relatedLinks.navigationLink.uri)
+        $links[0] | Should -BeExactly 'https://github.com/emilywilder/ask-copilot'
+        $links | Should -Contain 'https://github.com/github/copilot-cli'
+        $links | Should -Not -Contain $null
+    }
+
     It 'keeps code comments out of the examples' {
         foreach ($example in (Get-Help $AskCopilot -Examples).examples.example) {
             ($example.remarks.Text -join '').Trim() | Should -BeNullOrEmpty -Because "example '$($example.code)' has no remarks"

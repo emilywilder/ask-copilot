@@ -89,8 +89,36 @@
 
 .EXAMPLE
     ask-copilot -SecretName CopilotToken -Vault AzKV "what is a monad"
+
+.INPUTS
+    System.String
+
+    Text piped in is added under the question as context, one string per line. Only that text is sent;
+    Copilot cannot open files itself.
+
+.OUTPUTS
+    System.String
+
+    The answer as lines of GitHub-flavored Markdown, written to the pipeline as Copilot produces them.
+    When the answer is rendered with glow (see -Glow) it is drawn on the terminal instead, and nothing
+    is written to the pipeline.
+
+.NOTES
+    Requires PowerShell 7.2 or later and the native GitHub Copilot CLI (winget install GitHub.Copilot).
+    Optional: the 1Password CLI for -OpReference, SecretManagement with a remote vault for -SecretName,
+    and glow for rendered output.
+
+    -Verbose shows each step and -Debug also shows Copilot's arguments; neither ever shows the token.
+    If Copilot exits with an error, the script exits with the same code.
+
+.LINK
+    https://github.com/emilywilder/ask-copilot
+
+.LINK
+    https://github.com/github/copilot-cli
 #>
 [CmdletBinding(DefaultParameterSetName = 'OpReference')]
+[OutputType([string])]
 # One parameter set per token source. OpReference (the default) also covers the masked prompt.
 # (This comment must not sit directly under the help block, or Get-Help shows it as part of the help.)
 param(
