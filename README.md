@@ -151,6 +151,10 @@ $answer = ask-copilot what is a monad
 
 Copilot's errors go to the console (stderr), and the script exits with Copilot's exit code.
 
+While Copilot is thinking, a progress bar ("Asking Copilot – Waiting for the answer (3s)") shows the elapsed time
+and disappears as soon as the answer starts, or once the whole answer is in when glow renders it. It is drawn by
+PowerShell, never written to the output, and can be turned off with `$ProgressPreference = 'SilentlyContinue'`.
+
 ### glow
 
 | Mode   | Behaviour                                                                                         |

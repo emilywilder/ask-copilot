@@ -59,6 +59,9 @@ switch ($Role) {
             }
         }
 
+        # Simulate Copilot thinking before it answers.
+        if ($env:STUB_DELAY_MS) { Start-Sleep -Milliseconds ([int]$env:STUB_DELAY_MS) }
+
         [Console]::Error.WriteLine('stub copilot stderr')
         foreach ($line in '# Answer', '', 'Some **bold** text: naïve ✓', '', '```powershell', 'Get-Date', '```') {
             $stdout.WriteLine($line)

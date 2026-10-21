@@ -492,6 +492,56 @@ Describe 'Feedback' {
         $r.Stderr | Should -Not -Match 'github_pat_TEST0123456789'
     }
 
+    Context 'Progress while waiting for Copilot' {
+        BeforeAll {
+            # Runs the script in a PowerShell instance so its progress records can be read back.
+            $script:ProgressCommand = @'
+$ps = [powershell]::Create()
+$null = $ps.AddCommand($S).AddArgument('hi')
+if ($env:TEST_GLOW) { $null = $ps.AddParameter('Glow', $env:TEST_GLOW) }
+$out = $ps.Invoke()
+foreach ($p in $ps.Streams.Progress) { "PROGRESS|$($p.Activity)|$($p.StatusDescription)|$($p.RecordType)" }
+"OUTPUT_LINES=$($out.Count)"
+'@
+            function Get-ProgressRecord($Result) {
+                foreach ($line in $Result.Stdout -split '\r?\n' | Where-Object { $_ -like 'PROGRESS|*' }) {
+                    $activity, $status, $type = $line.Substring('PROGRESS|'.Length) -split '\|'
+                    [pscustomobject]@{ Activity = $activity; Status = $status; Type = $type }
+                }
+            }
+        }
+
+        It 'shows the elapsed time until the answer starts, then clears it' {
+            $r = Invoke-AskCopilot $ProgressCommand -Env @{ STUB_DELAY_MS = '1600' }
+            $records = @(Get-ProgressRecord $r)
+            $waiting = @($records | Where-Object Type -EQ 'Processing')
+            $waiting | Should -Not -BeNullOrEmpty
+            $waiting.Activity | Sort-Object -Unique | Should -Be 'Asking Copilot'
+            $waiting.Status | ForEach-Object { $_ | Should -Match '^Waiting for the answer \(\d+s\)$' }
+            $waiting.Status | Should -Contain 'Waiting for the answer (1s)'
+            $records[-1].Type | Should -Be 'Completed'
+            $r.Stdout | Should -Match 'OUTPUT_LINES=7'
+        }
+
+        It 'shows the elapsed time until the full answer is in when rendering with glow' {
+            $r = Invoke-AskCopilot $ProgressCommand -WithGlow -Env @{ STUB_DELAY_MS = '1600'; TEST_GLOW = 'on' }
+            $records = @(Get-ProgressRecord $r)
+            $waiting = @($records | Where-Object Type -EQ 'Processing')
+            $waiting.Status | ForEach-Object { $_ | Should -Match '^Waiting for the full answer \(\d+s\)$' }
+            $waiting.Status | Should -Contain 'Waiting for the full answer (1s)'
+            $records[-1].Type | Should -Be 'Completed'
+            $r.Glow | Should -Not -BeNullOrEmpty
+        }
+
+        It 'clears the progress even when Copilot answers immediately' {
+            $r = Invoke-AskCopilot $ProgressCommand
+            $records = @(Get-ProgressRecord $r)
+            $records | Should -Not -BeNullOrEmpty
+            $records[-1].Type | Should -Be 'Completed'
+            $r.Stdout | Should -Match 'OUTPUT_LINES=7'
+        }
+    }
+
     It 'warns when the temporary directory cannot be deleted' -Skip:(-not $IsWindows) {
         $r = Invoke-AskCopilot '& $S hi' -Env @{ STUB_HOLD_CWD_SECONDS = '5' }
         try {

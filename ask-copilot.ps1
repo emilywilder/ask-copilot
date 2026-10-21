@@ -337,6 +337,16 @@ begin {
         $StartInfo.Environment['COPILOT_AUTO_UPDATE'] = 'false'
     }
 
+    # Waits for a read of Copilot's output, showing progress with the elapsed time so it is clear the
+    # script is waiting on Copilot rather than hung. Waiting in short steps also lets Ctrl+C through.
+    # Returns the read's result; the caller completes the progress record.
+    function Wait-CopilotOutput([System.Threading.Tasks.Task] $Read, [System.Diagnostics.Stopwatch] $Stopwatch, [string] $Status) {
+        do {
+            Write-Progress -Activity 'Asking Copilot' -Status "$Status ($([int]$Stopwatch.Elapsed.TotalSeconds)s)"
+        } until ($Read.Wait(250))
+        $Read.GetAwaiter().GetResult()
+    }
+
     # Deletes the temporary working directory, retrying briefly while Copilot releases its files.
     function Remove-CopilotTempDirectory([string] $Path) {
         if (-not (Test-Path -LiteralPath $Path)) { return }
@@ -453,12 +463,12 @@ end {
         $token = $null
         Write-Verbose "Started Copilot (process $($proc.Id)) with the token in COPILOT_GITHUB_TOKEN."
 
+        # Progress is shown on the host, never in the output, and only until there is something to show.
+        $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
         if ($glowPath) {
-            # glow needs the whole document, so buffer it, then render. Nothing appears until
-            # Copilot finishes, so show progress in the meantime.
-            Write-Progress -Activity 'Asking Copilot' -Status 'Waiting for the answer'
+            # glow needs the whole document, so buffer it, then render.
             try {
-                $markdown = $proc.StandardOutput.ReadToEnd()
+                $markdown = Wait-CopilotOutput $proc.StandardOutput.ReadToEndAsync() $stopwatch 'Waiting for the full answer'
                 $proc.WaitForExit()
             }
             finally { Write-Progress -Activity 'Asking Copilot' -Completed }
@@ -470,7 +480,12 @@ end {
         }
         else {
             # Stream line by line so downstream commands get output as it arrives.
-            while ($null -ne ($outLine = $proc.StandardOutput.ReadLine())) { $outLine }
+            try { $outLine = Wait-CopilotOutput $proc.StandardOutput.ReadLineAsync() $stopwatch 'Waiting for the answer' }
+            finally { Write-Progress -Activity 'Asking Copilot' -Completed }
+            while ($null -ne $outLine) {
+                $outLine
+                $outLine = $proc.StandardOutput.ReadLine()
+            }
             $proc.WaitForExit()
         }
         Write-Verbose "Copilot exited with code $($proc.ExitCode)."
