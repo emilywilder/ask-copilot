@@ -143,7 +143,7 @@ begin {
     # ---- glow ------------------------------------------------------------------------------
 
     # True only when this script is a bare statement whose output goes straight to the host:
-    # not piped, not redirected (> file), not assigned ($x = ...), not inside ( ) or $( ).
+    # not piped, not redirected (> file), not assigned ($x = ...), not inside ( ), $( ) or @( ).
     function Test-OutputToTerminal([System.Management.Automation.InvocationInfo] $Invocation) {
         if ([Console]::IsOutputRedirected) { return $false }
         $line = "$($Invocation.Line)"
@@ -165,9 +165,23 @@ begin {
         if ($cmd.Redirections.Count -gt 0) { return $false }
         $pipeline = $cmd.Parent
         if ($pipeline -isnot [System.Management.Automation.Language.PipelineAst] -or $pipeline.PipelineElements.Count -ne 1) { return $false }
-        # A bare statement sits directly in a script/statement block; assignments, ( ), $( ) and @( ) do not.
-        return ($pipeline.Parent -is [System.Management.Automation.Language.NamedBlockAst] -or
-                $pipeline.Parent -is [System.Management.Automation.Language.StatementBlockAst])
+
+        # Walk out to the top level of the line. Output reaches the host only if every enclosing
+        # construct passes it straight through: the body of an if, loop, switch or try. $( ) and @( )
+        # also hold a statement block but capture it, as do assignments, conditions and script blocks.
+        $node = $pipeline
+        while ($true) {
+            $block = $node.Parent
+            if ($block -is [System.Management.Automation.Language.NamedBlockAst]) { return ($null -eq $block.Parent.Parent) }
+            if ($block -isnot [System.Management.Automation.Language.StatementBlockAst]) { return $false }
+            $owner = $block.Parent
+            if ($owner -is [System.Management.Automation.Language.CatchClauseAst]) { $owner = $owner.Parent }
+            if ($owner -isnot [System.Management.Automation.Language.IfStatementAst] -and
+                $owner -isnot [System.Management.Automation.Language.LoopStatementAst] -and
+                $owner -isnot [System.Management.Automation.Language.SwitchStatementAst] -and
+                $owner -isnot [System.Management.Automation.Language.TryStatementAst]) { return $false }
+            $node = $owner
+        }
     }
 
     function Resolve-Glow {

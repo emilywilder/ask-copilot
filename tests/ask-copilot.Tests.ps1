@@ -425,6 +425,9 @@ Describe 'glow' {
             @{ Case = 'a bare call'; Command = '& $S hi' }
             @{ Case = 'a call after another statement'; Command = '$a = 1; & $S hi' }
             @{ Case = 'pwsh -File'; Command = '& $env:STUB_PWSH -NoProfile -NonInteractive -File $S hi' }
+            @{ Case = 'the body of an if'; Command = 'if ($true) { & $S hi }' }
+            @{ Case = 'the body of a loop'; Command = 'foreach ($i in 1) { & $S hi }' }
+            @{ Case = 'a try block'; Command = 'try { & $S hi } finally { }' }
         ) {
             $r = Invoke-AskCopilot $Command -WithGlow -Terminal
             $r.ExitCode | Should -Be 0
@@ -440,6 +443,9 @@ Describe 'glow' {
             @{ Case = 'a subexpression in a string'; Command = '"$(& $S hi)"' }
             @{ Case = 'an assigned subexpression'; Command = '$x = $(& $S hi)' }
             @{ Case = 'an array subexpression'; Command = '@(& $S hi)' }
+            @{ Case = 'an assigned if'; Command = '$x = if ($true) { & $S hi }' }
+            @{ Case = 'a subexpression around an if'; Command = '$(if ($true) { & $S hi })' }
+            @{ Case = 'a script block'; Command = '& { & $S hi }' }
             @{ Case = 'a file redirect'; Command = '& $S hi > answer.md' }
             @{ Case = 'pwsh -File into a pipe'; Command = '& $env:STUB_PWSH -NoProfile -NonInteractive -File $S hi | Select-Object -First 1' }
             @{ Case = '-Glow off'; Command = '& $S -Glow off hi' }
