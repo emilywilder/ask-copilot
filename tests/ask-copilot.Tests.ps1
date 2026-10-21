@@ -399,8 +399,25 @@ Describe 'glow' {
 
         It 'rejects an invalid -Glow value before running Copilot' {
             $r = Invoke-AskCopilot '& $S -Glow sometimes hi' -WithGlow
-            $r.Stdout | Should -Match "EXCEPTION: -Glow must be auto, on or off \(got 'sometimes'\)"
+            $r.Stdout | Should -Match "EXCEPTION: Cannot validate argument on parameter 'Glow'"
             $r.Copilot | Should -BeNullOrEmpty
+        }
+
+        It 'accepts -Glow in any case' {
+            $r = Invoke-AskCopilot '& $S -Glow ON hi | Out-String' -WithGlow
+            $r.Glow | Should -Not -BeNullOrEmpty
+        }
+
+        It 'rejects an invalid ASK_COPILOT_GLOW before running Copilot' {
+            $r = Invoke-AskCopilot '& $S hi' -WithGlow -Env @{ ASK_COPILOT_GLOW = ' sometimes ' }
+            $r.Stdout | Should -Match "EXCEPTION: ASK_COPILOT_GLOW must be auto, on or off \(got 'sometimes'\)"
+            $r.Copilot | Should -BeNullOrEmpty
+        }
+
+        It 'offers auto, on and off as tab completions for -Glow' {
+            $line = "& '$($AskCopilot.Replace("'", "''"))' -Glow "
+            $completions = (TabExpansion2 -inputScript $line -cursorColumn $line.Length).CompletionMatches.CompletionText
+            $completions | Sort-Object | Should -Be @('auto', 'off', 'on')
         }
 
         It 'takes its default from ASK_COPILOT_GLOW, ignoring case and spaces' {

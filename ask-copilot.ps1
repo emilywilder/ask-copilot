@@ -103,6 +103,8 @@ param(
 
     [string] $Vault,
 
+    # ValidateSet checks -Glow when given; a default taken from ASK_COPILOT_GLOW is checked in begin.
+    [ValidateSet('auto', 'on', 'off')]
     [string] $Glow = $(if ($env:ASK_COPILOT_GLOW) { $env:ASK_COPILOT_GLOW } else { 'auto' }),
 
     [Alias('h', '-help')]
@@ -117,8 +119,9 @@ begin {
         exit 0
     }
 
-    $Glow = $Glow.Trim().ToLowerInvariant()
-    if ($Glow -notin 'auto', 'on', 'off') { throw "-Glow must be auto, on or off (got '$Glow')." }
+    # A separate variable: assigning an invalid value back to $Glow would fail its ValidateSet.
+    $glowMode = $Glow.Trim().ToLowerInvariant()
+    if ($glowMode -notin 'auto', 'on', 'off') { throw "ASK_COPILOT_GLOW must be auto, on or off (got '$($Glow.Trim())')." }
     $invocation = $MyInvocation
 
     Set-StrictMode -Version Latest
@@ -347,7 +350,7 @@ end {
     if (-not $q -and -not $context) { throw 'No question given.' }
     $prompt = New-Prompt $q $context
 
-    $glowPath = Get-GlowPath $Glow $invocation
+    $glowPath = Get-GlowPath $glowMode $invocation
     $exe = Resolve-CopilotExecutable
     $cliArgs = New-CopilotArgumentList $exe $prompt $Model
 
