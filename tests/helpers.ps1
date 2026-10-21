@@ -5,7 +5,7 @@ $script:Pwsh = [Environment]::ProcessPath
 $script:Nl = [Environment]::NewLine
 
 # Copilot, op and glow live in separate directories so each can be left off PATH on its own.
-function Initialize-StubTools {
+function Initialize-StubToolSet {
     $root = Join-Path ([IO.Path]::GetTempPath()) ('ask-copilot-tests-' + [guid]::NewGuid().ToString('N'))
     $tools = [pscustomobject]@{
         Root        = $root
@@ -45,7 +45,7 @@ function Initialize-StubTools {
     $tools
 }
 
-function Remove-StubTools($Tools) {
+function Remove-StubToolSet($Tools) {
     if ($Tools -and (Test-Path -LiteralPath $Tools.Root)) { Remove-Item -LiteralPath $Tools.Root -Recurse -Force }
 }
 

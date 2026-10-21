@@ -1,5 +1,7 @@
 # ask-copilot
 
+[![CI](https://github.com/emilywilder/ask-copilot/actions/workflows/ci.yml/badge.svg)](https://github.com/emilywilder/ask-copilot/actions/workflows/ci.yml)
+
 Ask GitHub Copilot a question from the terminal, with Copilot locked down so it can only answer.
 
 `ask-copilot.ps1` is a single PowerShell 7 script that runs the [GitHub Copilot CLI](https://github.com/github/copilot-cli)
@@ -78,7 +80,24 @@ The local `Microsoft.PowerShell.SecretStore` vault is refused because it saves s
 `op run` is not supported: the script strips environment variables from Copilot's environment, which would
 remove the one `op run` injects.
 
-### 3. Put it on your PATH
+### 3. Download and verify
+
+Download `ask-copilot.ps1` and `ask-copilot.ps1.sha256` from the
+[latest release](https://github.com/emilywilder/ask-copilot/releases/latest). Every release is built by
+GitHub Actions with a signed build-provenance attestation, so you can check the script came from this
+repository's CI:
+
+```powershell
+gh attestation verify ask-copilot.ps1 --repo emilywilder/ask-copilot
+```
+
+or compare the checksum:
+
+```powershell
+(Get-FileHash ask-copilot.ps1 -Algorithm SHA256).Hash -eq (Get-Content ask-copilot.ps1.sha256).Split(' ')[0]
+```
+
+### 4. Put it on your PATH
 
 Put `ask-copilot.ps1` in a directory on your `PATH`, or add an alias to your profile:
 
@@ -160,6 +179,20 @@ Invoke-Pester ./tests
 
 On Windows the stubs are compiled with the .NET Framework C# compiler that ships with Windows. Each test
 runs the script in a fresh `pwsh` with its own `PATH`, `TEMP` and environment.
+
+## CI and releases
+
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs on every push and pull request:
+
+- **Lint:** PSScriptAnalyzer with [`PSScriptAnalyzerSettings.psd1`](PSScriptAnalyzerSettings.psd1), which
+  lists the rules that are excluded and why.
+- **Test:** the Pester suite on Windows and Ubuntu; JUnit results are uploaded as artifacts.
+- **Release:** pushing a `v*` tag (for example `git tag v1.0.0 && git push origin v1.0.0`) runs lint and
+  tests, then publishes a GitHub release with `ask-copilot.ps1`, its SHA-256 checksum, generated release
+  notes and a build-provenance attestation.
+
+Actions are pinned to commit SHAs and kept current by Dependabot. The workflow token is read-only except
+in the release job.
 
 ## License
 

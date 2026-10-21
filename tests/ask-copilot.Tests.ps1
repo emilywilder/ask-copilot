@@ -12,11 +12,11 @@ BeforeDiscovery {
 
 BeforeAll {
     . (Join-Path $PSScriptRoot 'helpers.ps1')
-    $script:StubTools = Initialize-StubTools
+    $script:StubTools = Initialize-StubToolSet
 }
 
 AfterAll {
-    Remove-StubTools $StubTools
+    Remove-StubToolSet $StubTools
 }
 
 Describe 'Script file' {
