@@ -124,7 +124,8 @@ exit `$LASTEXITCODE
     }
 
     foreach ($k in @($psi.Environment.Keys)) {
-        if ($k -match '^(COPILOT_|GITHUB_COPILOT_|ASK_COPILOT_|STUB_)') { [void]$psi.Environment.Remove($k) }
+        # Includes the GITHUB_* variables CI runners set, so each test sees only the variables set below.
+        if ($k -match '^(COPILOT_|GITHUB_|GH_|ASK_COPILOT_|STUB_)') { [void]$psi.Environment.Remove($k) }
     }
     $vars = [ordered]@{
         PATH                    = $path -join [IO.Path]::PathSeparator
