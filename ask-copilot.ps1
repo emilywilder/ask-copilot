@@ -201,10 +201,18 @@ begin {
 
     # Returns the glow executable to render with, or nothing if the answer should stay raw Markdown.
     function Get-GlowPath([string] $Mode, [System.Management.Automation.InvocationInfo] $Invocation) {
-        if ($Mode -eq 'off') { return }
+        if ($Mode -eq 'off') { Write-Verbose 'glow: off; emitting raw Markdown.'; return }
         $glowPath = Resolve-Glow
-        if (-not $glowPath -and $Mode -eq 'on') { Write-Warning 'glow not found on PATH; showing raw Markdown.' }
-        if ($glowPath -and $Mode -eq 'auto' -and -not (Test-OutputToTerminal $Invocation)) { return }
+        if (-not $glowPath) {
+            if ($Mode -eq 'on') { Write-Warning 'glow not found on PATH; showing raw Markdown.' }
+            else { Write-Verbose 'glow: not found on PATH; emitting raw Markdown.' }
+            return
+        }
+        if ($Mode -eq 'auto' -and -not (Test-OutputToTerminal $Invocation)) {
+            Write-Verbose 'glow: output is piped, redirected or captured; emitting raw Markdown.'
+            return
+        }
+        Write-Verbose "glow: rendering with $glowPath."
         $glowPath
     }
 
@@ -262,15 +270,25 @@ begin {
         $cliArgs = [System.Collections.Generic.List[string]]::new()
         # Use the --prompt=VALUE form so a question that starts with '-' can't be read as a flag.
         if (& $hasFlag '--prompt') { $cliArgs.Add("--prompt=$Prompt") }
-        else { $cliArgs.Add('-p'); $cliArgs.Add($(if ($Prompt.StartsWith('-')) { " $Prompt" } else { $Prompt })) }
+        else {
+            Write-Verbose 'This Copilot CLI has no --prompt flag; passing the prompt with -p.'
+            $cliArgs.Add('-p'); $cliArgs.Add($(if ($Prompt.StartsWith('-')) { " $Prompt" } else { $Prompt }))
+        }
         $cliArgs.Add('--silent')
         $cliArgs.Add('--no-ask-user')
         $cliArgs.Add('--no-custom-instructions')
         $cliArgs.Add('--deny-tool=shell,write,read,url,memory,github')
-        foreach ($f in '--disable-builtin-mcps', '--no-auto-update', '--disable-client-telemetry', '--no-color') {
-            if (& $hasFlag $f) { $cliArgs.Add($f) }
-        }
+        $optional = '--disable-builtin-mcps', '--no-auto-update', '--disable-client-telemetry', '--no-color'
+        $supported = @($optional | Where-Object { & $hasFlag $_ })
+        foreach ($f in $supported) { $cliArgs.Add($f) }
+        Write-Verbose "Optional hardening flags passed: $(if ($supported) { $supported -join ', ' } else { 'none' })."
+        $unsupported = @($optional | Where-Object { $_ -notin $supported })
+        if ($unsupported) { Write-Verbose "Not supported by this Copilot CLI: $($unsupported -join ', ')." }
         if ($Model) { $cliArgs.Add("--model=$Model") }
+
+        # The prompt is shown by length only, to keep the debug line readable.
+        $shown = foreach ($a in $cliArgs) { if ($a -in "--prompt=$Prompt", $Prompt, " $Prompt") { "<prompt: $($Prompt.Length) characters>" } else { $a } }
+        Write-Debug "Copilot arguments: $($shown -join ' ')"
         $cliArgs
     }
 
@@ -283,6 +301,8 @@ begin {
             $_ -in 'GH_TOKEN', 'GITHUB_TOKEN', 'GH_ENTERPRISE_TOKEN', 'GITHUB_ENTERPRISE_TOKEN', 'GH_HOST'
         })
         foreach ($k in $strip) { [void]$StartInfo.Environment.Remove($k) }
+        if ($strip) { Write-Verbose "Removed from Copilot's environment: $(($strip | Sort-Object) -join ', ')." }
+        else { Write-Verbose 'No inherited Copilot or GitHub token variables to remove.' }
 
         $StartInfo.Environment['COPILOT_HOME'] = $CopilotHome
         $StartInfo.Environment['COPILOT_AUTO_UPDATE'] = 'false'
@@ -292,9 +312,14 @@ begin {
     function Remove-TempRoot([string] $Path) {
         if (-not (Test-Path -LiteralPath $Path)) { return }
         for ($i = 0; $i -lt 5; $i++) {
-            try { Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction Stop; break }
+            try {
+                Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction Stop
+                Write-Verbose "Deleted the temporary directory $Path."
+                return
+            }
             catch { Start-Sleep -Milliseconds 200 }
         }
+        Write-Warning "Could not delete the temporary directory $Path. It may hold Copilot's files for this session; delete it yourself."
     }
 
     # ---- Token -----------------------------------------------------------------------------
@@ -304,6 +329,7 @@ begin {
         $op = Get-Command -Name op -CommandType Application -ErrorAction SilentlyContinue |
             Where-Object { -not $IsWindows -or $_.Extension -eq '.exe' } | Select-Object -First 1
         if (-not $op) { throw '1Password CLI (op) not found on PATH. Install it with: winget install AgileBits.1Password.CLI' }
+        Write-Verbose "Reading the token from 1Password ($Reference) with $($op.Source)."
         $value = & $op.Source read --no-newline -- $Reference
         if ($LASTEXITCODE -ne 0 -or -not $value) { throw "op could not read $Reference (exit $LASTEXITCODE)." }
         $secure = ConvertTo-SecureString -String ([string]$value) -AsPlainText -Force
@@ -320,6 +346,7 @@ begin {
         if ($vaultInfo.ModuleName -eq 'Microsoft.PowerShell.SecretStore') {
             throw "Vault '$($vaultInfo.Name)' is a local SecretStore, which saves secrets to a file on this machine. Use a remote vault or omit -SecretName to be prompted."
         }
+        Write-Verbose "Reading secret '$Name' from SecretManagement vault '$($vaultInfo.Name)' ($($vaultInfo.ModuleName))."
         $secret = Get-Secret -Name $Name -Vault $vaultInfo.Name
         if ($secret -is [pscredential]) { $secret = $secret.Password }
         if ($secret -is [string]) { $secret = ConvertTo-SecureString -String $secret -AsPlainText -Force }
@@ -332,6 +359,7 @@ begin {
         if ($ParameterSet -eq 'SecretName') { return Get-VaultToken $SecretName $Vault }
         if ($OpReference) { return Read-OpToken $OpReference }
 
+        Write-Verbose 'No -OpReference, -SecretName or ASK_COPILOT_OP_REF; prompting for the token.'
         $secure = Read-Host -Prompt 'GitHub fine-grained token (Copilot Requests permission)' -AsSecureString
         if ($secure.Length -eq 0) { throw 'No token entered.' }
         return $secure
@@ -356,12 +384,15 @@ end {
     }
     if (-not $q -and -not $context) { throw 'No question given.' }
     $prompt = New-Prompt $q $context
+    Write-Verbose "Question: $($q.Length) characters; piped context: $($context.Length) characters."
 
     $glowPath = Get-GlowPath $glowMode $invocation
     $exe = Resolve-CopilotExecutable
+    Write-Verbose "Copilot CLI: $exe"
     $cliArgs = New-CopilotArgumentList $exe $prompt $Model
 
     $root = Join-Path ([IO.Path]::GetTempPath()) ("ask-copilot-" + [guid]::NewGuid().ToString('N'))
+    Write-Verbose "Temporary directory (working directory and COPILOT_HOME): $root"
     $copilotHome = Join-Path $root 'home'
     $workDir = Join-Path $root 'work'
     $proc = $null
@@ -391,11 +422,17 @@ end {
         $proc = [System.Diagnostics.Process]::Start($psi)
         $psi.Environment['COPILOT_GITHUB_TOKEN'] = $null
         $token = $null
+        Write-Verbose "Started Copilot (process $($proc.Id)) with the token in COPILOT_GITHUB_TOKEN."
 
         if ($glowPath) {
-            # glow needs the whole document, so buffer it, then render.
-            $markdown = $proc.StandardOutput.ReadToEnd()
-            $proc.WaitForExit()
+            # glow needs the whole document, so buffer it, then render. Nothing appears until
+            # Copilot finishes, so show progress in the meantime.
+            Write-Progress -Activity 'Asking Copilot' -Status 'Waiting for the answer'
+            try {
+                $markdown = $proc.StandardOutput.ReadToEnd()
+                $proc.WaitForExit()
+            }
+            finally { Write-Progress -Activity 'Asking Copilot' -Completed }
             if ($markdown.Trim()) {
                 $rendered = $false
                 try { $rendered = Invoke-Glow $glowPath $markdown } catch { Write-Warning "glow failed: $_" }
@@ -407,6 +444,7 @@ end {
             while ($null -ne ($outLine = $proc.StandardOutput.ReadLine())) { $outLine }
             $proc.WaitForExit()
         }
+        Write-Verbose "Copilot exited with code $($proc.ExitCode)."
         $global:LASTEXITCODE = $proc.ExitCode
         if ($proc.ExitCode -ne 0) { exit $proc.ExitCode }
     }

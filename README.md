@@ -116,6 +116,10 @@ ask-copilot [-Question] <words...> [-Model <name>] -SecretName <name> [-Vault <n
 Every word after the script name is joined into one question, so quotes are optional (but still useful
 for characters PowerShell treats specially). With no question and no piped input, you are prompted for one.
 
+Add `-Verbose` to see each step: which Copilot CLI and flags are used, where the token comes from, which
+variables are removed from Copilot's environment, and whether glow is used. `-Debug` also shows Copilot's
+arguments, with the prompt shown only by length. The token never appears in either.
+
 | Parameter      | Description                                                                                   |
 | -------------- | --------------------------------------------------------------------------------------------- |
 | `-Question`    | The question.                                                                                 |

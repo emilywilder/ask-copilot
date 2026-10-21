@@ -391,6 +391,96 @@ Describe 'Output' {
     }
 }
 
+Describe 'Feedback' {
+    It 'writes no verbose output by default' {
+        $r = Invoke-AskCopilot '& $S hi'
+        $r.Stdout | Should -Not -Match 'VERBOSE:'
+    }
+
+    It 'reports each step with -Verbose' {
+        $r = Invoke-AskCopilot '& $S -Verbose hi'
+        $r.ExitCode | Should -Be 0
+        $r.Stdout | Should -Match 'VERBOSE: Question: 2 characters; piped context: 0 characters\.'
+        $r.Stdout | Should -Match 'VERBOSE: glow: not found on PATH; emitting raw Markdown\.'
+        $r.Stdout | Should -Match ('VERBOSE: Copilot CLI: .*' + [regex]::Escape([IO.Path]::DirectorySeparatorChar) + 'copilot')
+        $r.Stdout | Should -Match 'VERBOSE: Optional hardening flags passed: --disable-builtin-mcps, --no-auto-update, --disable-client-telemetry, --no-color\.'
+        $r.Stdout | Should -Match 'VERBOSE: Temporary directory \(working directory and COPILOT_HOME\): .*ask-copilot-[0-9a-f]{32}'
+        $r.Stdout | Should -Match ([regex]::Escape('VERBOSE: Reading the token from 1Password (op://Test/Copilot PAT/credential)'))
+        $r.Stdout | Should -Match 'VERBOSE: Started Copilot \(process \d+\) with the token in COPILOT_GITHUB_TOKEN\.'
+        $r.Stdout | Should -Match 'VERBOSE: Copilot exited with code 0\.'
+        $r.Stdout | Should -Match 'VERBOSE: Deleted the temporary directory .*ask-copilot-[0-9a-f]{32}\.'
+    }
+
+    It 'reports the length of piped context' {
+        $r = Invoke-AskCopilot '"abc", "de" | & $S -Verbose q'
+        $r.Stdout | Should -Match "VERBOSE: Question: 1 characters; piped context: $(5 + $Nl.Length) characters\."
+    }
+
+    It 'names the variables it removed from Copilot''s environment' {
+        $r = Invoke-AskCopilot '& $S -Verbose hi'
+        $line = ($r.Stdout -split '\r?\n' | Where-Object { $_ -like "VERBOSE: Removed from Copilot's environment:*" })
+        $line | Should -Not -BeNullOrEmpty
+        foreach ($name in 'COPILOT_ALLOW_ALL', 'COPILOT_MODEL', 'GITHUB_COPILOT_TOKEN', 'GH_TOKEN', 'GITHUB_TOKEN',
+                          'GH_ENTERPRISE_TOKEN', 'GITHUB_ENTERPRISE_TOKEN', 'GH_HOST') {
+            $line | Should -Match "\b$name\b"
+        }
+    }
+
+    It 'reports optional flags the CLI does not support' {
+        $r = Invoke-AskCopilot '& $S -Verbose hi' -Env @{ STUB_HELP = 'minimal' }
+        $r.Stdout | Should -Match 'VERBOSE: Optional hardening flags passed: none\.'
+        $r.Stdout | Should -Match 'VERBOSE: Not supported by this Copilot CLI: --disable-builtin-mcps, --no-auto-update, --disable-client-telemetry, --no-color\.'
+    }
+
+    It 'reports the -p fallback' {
+        $r = Invoke-AskCopilot '& $S -Verbose hi' -Env @{ STUB_HELP = 'noprompt' }
+        $r.Stdout | Should -Match 'VERBOSE: This Copilot CLI has no --prompt flag; passing the prompt with -p\.'
+    }
+
+    It 'reports the vault a secret is read from' {
+        $r = Invoke-AskCopilot '& $S -Verbose -SecretName CopilotToken -Vault Remote hi'
+        $r.Stdout | Should -Match "VERBOSE: Reading secret 'CopilotToken' from SecretManagement vault 'Remote' \(Az\.KeyVault\)\."
+    }
+
+    It 'reports the glow decision for <Case>' -ForEach @(
+        @{ Case = '-Glow off'; Command = '& $S -Verbose -Glow off hi'; Expected = 'glow: off; emitting raw Markdown\.' }
+        @{ Case = 'auto with redirected output'; Command = '& $S -Verbose hi'; Expected = 'glow: output is piped, redirected or captured; emitting raw Markdown\.' }
+        @{ Case = '-Glow on'; Command = '& $S -Verbose -Glow on hi'; Expected = 'glow: rendering with .*glow' }
+    ) {
+        $r = Invoke-AskCopilot $Command -WithGlow
+        $r.Stdout | Should -Match "VERBOSE: $Expected"
+    }
+
+    It 'shows Copilot''s arguments with -Debug, with the prompt shortened to its length' {
+        $r = Invoke-AskCopilot '& $S -Debug hi'
+        $r.Stdout | Should -Match 'DEBUG: Copilot arguments: <prompt: \d+ characters> --silent --no-ask-user --no-custom-instructions --deny-tool=shell,write,read,url,memory,github'
+    }
+
+    It 'never shows the token in verbose or debug output' {
+        $r = Invoke-AskCopilot '& $S -Verbose -Debug hi'
+        $r.Stdout | Should -Match 'VERBOSE:'
+        $r.Stdout | Should -Not -Match 'github_pat_TEST0123456789'
+        $r.Stderr | Should -Not -Match 'github_pat_TEST0123456789'
+    }
+
+    It 'warns when the temporary directory cannot be deleted' -Skip:(-not $IsWindows) {
+        $r = Invoke-AskCopilot '& $S hi' -Env @{ STUB_HOLD_CWD_SECONDS = '5' }
+        try {
+            $r.ExitCode | Should -Be 0
+            $r.Stdout | Should -Match 'WARNING: Could not delete the temporary directory .*ask-copilot-[0-9a-f]{32}\. It may hold Copilot''s files for this session; delete it yourself\.'
+            $r.LeftoverTempDirs | Should -Not -BeNullOrEmpty
+        }
+        finally {
+            # Wait for the holder process to exit so the directory can be cleaned up.
+            foreach ($dir in $r.LeftoverTempDirs) {
+                for ($i = 0; $i -lt 40 -and (Test-Path -LiteralPath $dir.FullName); $i++) {
+                    try { Remove-Item -LiteralPath $dir.FullName -Recurse -Force -ErrorAction Stop } catch { Start-Sleep -Milliseconds 250 }
+                }
+            }
+        }
+    }
+}
+
 Describe 'glow' {
     Context 'Explicit and invalid modes' {
         It 'renders with glow for -Glow on, even when captured' {

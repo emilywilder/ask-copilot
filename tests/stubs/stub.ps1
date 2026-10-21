@@ -50,6 +50,15 @@ switch ($Role) {
             env = $envVars
         })
 
+        if ($env:STUB_HOLD_CWD_SECONDS) {
+            # Keep the working directory in use after this stub exits, so it can't be deleted (Windows only).
+            # Started through WMI so the holder inherits none of this process's handles, such as stdout.
+            $null = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{
+                CommandLine      = "`"$env:STUB_PWSH`" -NoProfile -NonInteractive -Command Start-Sleep -Seconds $env:STUB_HOLD_CWD_SECONDS"
+                CurrentDirectory = $cwd
+            }
+        }
+
         [Console]::Error.WriteLine('stub copilot stderr')
         foreach ($line in '# Answer', '', 'Some **bold** text: naïve ✓', '', '```powershell', 'Get-Date', '```') {
             $stdout.WriteLine($line)
