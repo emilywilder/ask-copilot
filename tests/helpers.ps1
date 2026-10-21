@@ -117,6 +117,8 @@ exit `$LASTEXITCODE
         $psi.CreateNoWindow = $true
     }
     else {
+        # script(1) passes this stdin on to the pty, which is how the cursor-position replies below arrive.
+        if ($Terminal) { $psi.RedirectStandardInput = $true }
         $psi.RedirectStandardOutput = $true
         $psi.RedirectStandardError = $true
         $psi.StandardOutputEncoding = [System.Text.UTF8Encoding]::new($false)
@@ -136,6 +138,8 @@ exit `$LASTEXITCODE
         STUB_PWSH               = $Pwsh
         STUB_SCRIPT             = $StubTools.StubScript
         STUB_LOG_DIR            = $logs
+        # Some pwsh versions colour verbose and warning text even when redirected; keep output plain.
+        NO_COLOR                = '1'
         ASK_COPILOT_OP_REF      = 'op://Test/Copilot PAT/credential'
         COPILOT_ALLOW_ALL       = 'true'
         COPILOT_MODEL           = 'should-be-stripped'
@@ -153,6 +157,13 @@ exit `$LASTEXITCODE
 
     $proc = [System.Diagnostics.Process]::Start($psi)
     try {
+        if ($psi.RedirectStandardInput) {
+            # Drawing progress makes pwsh ask the terminal where the cursor is (ESC[6n) and wait for the
+            # reply. A real terminal answers at once; script(1) does not, so each query would time out
+            # after several seconds. Queue replies the way a terminal would. stdin stays open until exit.
+            $proc.StandardInput.Write("`e[1;1R" * 500)
+            $proc.StandardInput.Flush()
+        }
         $stdoutTask = $stderrTask = $null
         if ($psi.RedirectStandardOutput) {
             $stdoutTask = $proc.StandardOutput.ReadToEndAsync()
