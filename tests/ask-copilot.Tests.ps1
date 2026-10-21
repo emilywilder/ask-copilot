@@ -29,6 +29,12 @@ Describe 'Script file' {
     It 'has comment-based help that Get-Help recognises' {
         (Get-Help $AskCopilot).Synopsis | Should -BeLike 'Ask GitHub Copilot a question from the terminal*'
     }
+
+    It 'keeps code comments out of the examples' {
+        foreach ($example in (Get-Help $AskCopilot -Examples).examples.example) {
+            ($example.remarks.Text -join '').Trim() | Should -BeNullOrEmpty -Because "example '$($example.code)' has no remarks"
+        }
+    }
 }
 
 Describe 'Help' {

@@ -90,8 +90,9 @@
 .EXAMPLE
     ask-copilot -SecretName CopilotToken -Vault AzKV "what is a monad"
 #>
-# One parameter set per token source. OpReference (the default) also covers the masked prompt.
 [CmdletBinding(DefaultParameterSetName = 'OpReference')]
+# One parameter set per token source. OpReference (the default) also covers the masked prompt.
+# (This comment must not sit directly under the help block, or Get-Help shows it as part of the help.)
 param(
     [Parameter(Position = 0, ValueFromRemainingArguments)]
     [string[]] $Question,
