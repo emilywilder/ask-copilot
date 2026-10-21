@@ -167,7 +167,7 @@ begin {
     # ---- Prompt ----------------------------------------------------------------------------
 
     # Puts any piped context under the question and appends the answer-format instruction.
-    function New-Prompt([string] $Text, [string] $Context) {
+    function New-CopilotPrompt([string] $Text, [string] $Context) {
         $nl = [Environment]::NewLine
         $prompt = if ($Context) {
             if ($Text) { "$Text$nl$nl$Context" } else { $Context }
@@ -223,7 +223,7 @@ begin {
         }
     }
 
-    function Resolve-Glow {
+    function Resolve-GlowExecutable {
         $g = Get-Command -Name glow -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
         if ($g) { $g.Source }
     }
@@ -231,7 +231,7 @@ begin {
     # Returns the glow executable to render with, or nothing if the answer should stay raw Markdown.
     function Get-GlowPath([string] $Mode, [System.Management.Automation.InvocationInfo] $Invocation) {
         if ($Mode -eq 'off') { Write-Verbose 'glow: off; emitting raw Markdown.'; return }
-        $glowPath = Resolve-Glow
+        $glowPath = Resolve-GlowExecutable
         if (-not $glowPath) {
             if ($Mode -eq 'on') { Write-Warning 'glow not found on PATH; showing raw Markdown.' }
             else { Write-Verbose 'glow: not found on PATH; emitting raw Markdown.' }
@@ -338,7 +338,7 @@ begin {
     }
 
     # Deletes the temporary working directory, retrying briefly while Copilot releases its files.
-    function Remove-TempRoot([string] $Path) {
+    function Remove-CopilotTempDirectory([string] $Path) {
         if (-not (Test-Path -LiteralPath $Path)) { return }
         for ($i = 0; $i -lt 5; $i++) {
             try {
@@ -353,7 +353,7 @@ begin {
 
     # ---- Token -----------------------------------------------------------------------------
 
-    function Read-OpToken([string] $Reference) {
+    function Read-OnePasswordToken([string] $Reference) {
         if (-not $Reference.StartsWith('op://')) { throw "-OpReference must look like op://vault/item/field." }
         $op = Get-Command -Name op -CommandType Application -ErrorAction SilentlyContinue |
             Where-Object { -not $IsWindows -or $_.Extension -eq '.exe' } | Select-Object -First 1
@@ -366,7 +366,7 @@ begin {
         return $secure
     }
 
-    function Get-VaultToken([string] $Name, [string] $VaultName) {
+    function Get-SecretVaultToken([string] $Name, [string] $VaultName) {
         Import-Module Microsoft.PowerShell.SecretManagement -ErrorAction Stop
         $vaultInfo = if ($VaultName) { Get-SecretVault -Name $VaultName } else {
             Get-SecretVault | Where-Object IsDefault | Select-Object -First 1
@@ -385,8 +385,8 @@ begin {
 
     # $ParameterSet picks the source; parameter binding already rejects -OpReference with -SecretName.
     function Get-CopilotToken([string] $ParameterSet, [string] $OpReference, [string] $SecretName, [string] $Vault) {
-        if ($ParameterSet -eq 'SecretName') { return Get-VaultToken $SecretName $Vault }
-        if ($OpReference) { return Read-OpToken $OpReference }
+        if ($ParameterSet -eq 'SecretName') { return Get-SecretVaultToken $SecretName $Vault }
+        if ($OpReference) { return Read-OnePasswordToken $OpReference }
 
         Write-Verbose 'No -OpReference, -SecretName or ASK_COPILOT_OP_REF; prompting for the token.'
         $secure = Read-Host -Prompt 'GitHub fine-grained token (Copilot Requests permission)' -AsSecureString
@@ -412,7 +412,7 @@ end {
         $q = (Read-Host -Prompt 'Question').Trim()
     }
     if (-not $q -and -not $context) { throw 'No question given.' }
-    $prompt = New-Prompt $q $context
+    $prompt = New-CopilotPrompt $q $context
     Write-Verbose "Question: $($q.Length) characters; piped context: $($context.Length) characters."
 
     $glowPath = Get-GlowPath $glowMode $invocation
@@ -481,6 +481,6 @@ end {
         $token = $null
         if ($proc -and -not $proc.HasExited) { try { $proc.Kill($true) } catch { } }
         if ($proc) { $proc.Dispose() }
-        Remove-TempRoot $root
+        Remove-CopilotTempDirectory $root
     }
 }
