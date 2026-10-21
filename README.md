@@ -149,6 +149,18 @@ ask-copilot -SecretName CopilotToken -Vault AzKV "what is a monad"
 ask-copilot --help
 ```
 
+## Running the tests
+
+The tests use [Pester](https://pester.dev) 5 or later and replace `copilot`, `op` and `glow` with stubs, so
+they need neither a GitHub token nor network access:
+
+```powershell
+Invoke-Pester ./tests
+```
+
+On Windows the stubs are compiled with the .NET Framework C# compiler that ships with Windows. Each test
+runs the script in a fresh `pwsh` with its own `PATH`, `TEMP` and environment.
+
 ## License
 
 [MIT](LICENSE)
