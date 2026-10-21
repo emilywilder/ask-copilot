@@ -53,12 +53,15 @@
 .PARAMETER OpReference
     1Password secret reference for the token, e.g. "op://Private/GitHub Copilot PAT/credential".
     Can also be set once in your profile via $env:ASK_COPILOT_OP_REF (the reference is not a secret).
+    With neither -OpReference nor -SecretName, and no ASK_COPILOT_OP_REF, you are prompted for the token.
+    Cannot be combined with -SecretName.
 
 .PARAMETER SecretName
-    Name of a SecretManagement secret holding the token. If omitted, you are prompted for it.
+    Name of a SecretManagement secret holding the token. Takes precedence over $env:ASK_COPILOT_OP_REF.
+    Cannot be combined with -OpReference.
 
 .PARAMETER Vault
-    SecretManagement vault to read -SecretName from. Defaults to your default vault.
+    SecretManagement vault to read -SecretName from. Defaults to your default vault. Requires -SecretName.
 
 .PARAMETER Glow
     Render the Markdown answer with glow: auto (default), on or off.
@@ -87,7 +90,8 @@
 .EXAMPLE
     ask-copilot -SecretName CopilotToken -Vault AzKV "what is a monad"
 #>
-[CmdletBinding()]
+# One parameter set per token source. OpReference (the default) also covers the masked prompt.
+[CmdletBinding(DefaultParameterSetName = 'OpReference')]
 param(
     [Parameter(Position = 0, ValueFromRemainingArguments)]
     [string[]] $Question,
@@ -97,10 +101,13 @@ param(
 
     [string] $Model,
 
+    [Parameter(ParameterSetName = 'OpReference')]
     [string] $OpReference = $env:ASK_COPILOT_OP_REF,
 
+    [Parameter(Mandatory, ParameterSetName = 'SecretName')]
     [string] $SecretName,
 
+    [Parameter(ParameterSetName = 'SecretName')]
     [string] $Vault,
 
     # ValidateSet checks -Glow when given; a default taken from ASK_COPILOT_GLOW is checked in begin.
@@ -320,10 +327,10 @@ begin {
         return $secret
     }
 
-    function Get-CopilotToken {
-        if ($OpReference -and $SecretName) { throw 'Use either -OpReference or -SecretName, not both.' }
+    # $ParameterSet picks the source; parameter binding already rejects -OpReference with -SecretName.
+    function Get-CopilotToken([string] $ParameterSet, [string] $OpReference, [string] $SecretName, [string] $Vault) {
+        if ($ParameterSet -eq 'SecretName') { return Get-VaultToken $SecretName $Vault }
         if ($OpReference) { return Read-OpToken $OpReference }
-        if ($SecretName) { return Get-VaultToken $SecretName $Vault }
 
         $secure = Read-Host -Prompt 'GitHub fine-grained token (Copilot Requests permission)' -AsSecureString
         if ($secure.Length -eq 0) { throw 'No token entered.' }
@@ -360,7 +367,7 @@ end {
     $proc = $null
     $token = $null
     try {
-        $secureToken = Get-CopilotToken
+        $secureToken = Get-CopilotToken -ParameterSet $PSCmdlet.ParameterSetName -OpReference $OpReference -SecretName $SecretName -Vault $Vault
         $token = ConvertFrom-SecureToken $secureToken
         if ($token.StartsWith('ghp_')) {
             throw 'Classic PATs (ghp_) are rejected by Copilot CLI and grant far more access than needed. Use a fine-grained token with only Copilot Requests.'

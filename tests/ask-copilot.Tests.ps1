@@ -262,9 +262,33 @@ Describe 'Authentication' {
         }
 
         It 'refuses -OpReference together with -SecretName' {
-            $r = Invoke-AskCopilot '& $S -SecretName tok hi'
-            $r.Stdout | Should -Match 'EXCEPTION: Use either -OpReference or -SecretName, not both'
+            $r = Invoke-AskCopilot '& $S -OpReference "op://Other/Item/field" -SecretName tok hi'
+            $r.Stdout | Should -Match 'EXCEPTION: Parameter set cannot be resolved'
             $r.Op | Should -BeNullOrEmpty
+            $r.Secret | Should -BeNullOrEmpty
+            $r.Copilot | Should -BeNullOrEmpty
+        }
+    }
+
+    Context 'Parameter sets' {
+        It 'has an OpReference set (the default) and a SecretName set' {
+            $command = Get-Command $AskCopilot
+            $command.ParameterSets.Name | Sort-Object | Should -Be @('OpReference', 'SecretName')
+            ($command.ParameterSets | Where-Object IsDefault).Name | Should -BeExactly 'OpReference'
+        }
+
+        It 'lets -SecretName take precedence over ASK_COPILOT_OP_REF' {
+            $r = Invoke-AskCopilot '& $S -SecretName CopilotToken -Vault Remote hi'
+            $r.Op | Should -BeNullOrEmpty
+            $r.Secret.name | Should -BeExactly 'CopilotToken'
+            $r.Copilot.env.COPILOT_GITHUB_TOKEN | Should -BeExactly 'github_pat_FROMVAULT'
+        }
+
+        It 'requires -SecretName when -Vault is given' {
+            $r = Invoke-AskCopilot '& $S -Vault Remote hi'
+            $r.Stdout | Should -Match 'EXCEPTION: .*missing mandatory parameters: SecretName'
+            $r.Op | Should -BeNullOrEmpty
+            $r.Copilot | Should -BeNullOrEmpty
         }
     }
 

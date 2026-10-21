@@ -5,8 +5,6 @@
         # The token read from op or a vault arrives as plain text and is wrapped in a SecureString
         # straight away; there is no encrypted form to start from.
         'PSAvoidUsingConvertToSecureStringWithPlainText'
-        # -OpReference, -SecretName and -Vault are read by helper functions through scope.
-        'PSReviewUnusedParameter'
         # Internal helpers, not published cmdlets; -WhatIf/-Confirm would mean nothing for them.
         'PSUseShouldProcessForStateChangingFunctions'
         # The one empty catch is deliberate: killing an already-exited Copilot process during cleanup.

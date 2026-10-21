@@ -74,6 +74,7 @@ or pass it per call with `-OpReference`.
 **SecretManagement.** Use `-SecretName` (and optionally `-Vault`) to read the token from a
 [SecretManagement](https://github.com/PowerShell/SecretManagement) vault such as Azure Key Vault or Bitwarden.
 The local `Microsoft.PowerShell.SecretStore` vault is refused because it saves secrets to a file on this machine.
+`-SecretName` takes precedence over `ASK_COPILOT_OP_REF`, and can't be combined with `-OpReference`.
 
 **Prompt.** With neither option, you are asked to paste the token at a masked prompt on each run.
 
@@ -108,8 +109,8 @@ Set-Alias ask-copilot C:\path\to\ask-copilot.ps1
 ## Usage
 
 ```text
-ask-copilot [-Question] <words...> [-Model <name>] [-OpReference <op://...>]
-            [-SecretName <name>] [-Vault <name>] [-Glow auto|on|off] [-Help]
+ask-copilot [-Question] <words...> [-Model <name>] [-OpReference <op://...>] [-Glow auto|on|off] [-Help]
+ask-copilot [-Question] <words...> [-Model <name>] -SecretName <name> [-Vault <name>] [-Glow auto|on|off] [-Help]
 ```
 
 Every word after the script name is joined into one question, so quotes are optional (but still useful
