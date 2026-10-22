@@ -235,10 +235,11 @@ Describe 'Lockdown' {
         $r.LeftoverTempDirs | Should -BeNullOrEmpty
     }
 
-    It 'fails when Copilot CLI is not on PATH' {
+    It 'fails when Copilot CLI is not on PATH, before reading the token' {
         $r = Invoke-AskCopilot '& $S hi' -WithoutCopilot
         $r.Stdout | Should -Match 'EXCEPTION: GitHub Copilot CLI not found on PATH'
         $r.ExitCode | Should -Be 99
+        $r.Op | Should -BeNullOrEmpty
     }
 
     Context 'Windows launching' -Skip:(-not $IsWindows) {
@@ -301,6 +302,25 @@ Describe 'Authentication' {
             $r = Invoke-AskCopilot '& $S hi' -Env @{ STUB_OP_EXIT = '1' }
             $r.Stdout | Should -Match 'EXCEPTION: op could not read op://Test/Copilot PAT/credential \(exit 1\)'
             $r.Copilot | Should -BeNullOrEmpty
+            $r.CopilotHelpRan | Should -BeFalse
+        }
+
+        It 'fails when op is not on PATH, before <Case>' -ForEach @(
+            @{ Case = 'probing Copilot'; Command = '& $S hi' }
+            # With no question it would prompt for one; -NonInteractive would make that prompt fail instead.
+            @{ Case = 'asking for the question'; Command = '& $S' }
+        ) {
+            $r = Invoke-AskCopilot $Command -WithoutOp
+            $r.Stdout | Should -Match 'EXCEPTION: 1Password CLI \(op\) not found on PATH'
+            $r.CopilotHelpRan | Should -BeFalse
+            $r.Copilot | Should -BeNullOrEmpty
+            $r.LeftoverTempDirs | Should -BeNullOrEmpty
+        }
+
+        It 'does not need op when the token comes from SecretManagement' {
+            $r = Invoke-AskCopilot '& $S -SecretName CopilotToken -Vault Remote hi' -WithoutOp
+            $r.ExitCode | Should -Be 0
+            $r.Copilot.env.COPILOT_GITHUB_TOKEN | Should -BeExactly 'github_pat_FROMVAULT'
         }
 
         It 'refuses -OpReference together with -SecretName' {
@@ -341,20 +361,31 @@ Describe 'Authentication' {
             $r.Copilot | Should -BeNullOrEmpty
         }
 
-        It 'accepts a <Prefix> token without a warning' -ForEach @(
+        It 'accepts a <Prefix> token' -ForEach @(
             @{ Prefix = 'github_pat_' }
             @{ Prefix = 'ghu_' }
             @{ Prefix = 'gho_' }
         ) {
             $r = Invoke-AskCopilot '& $S hi' -Env @{ STUB_TOKEN = "${Prefix}abc" }
+            $r.ExitCode | Should -Be 0
             $r.Copilot.env.COPILOT_GITHUB_TOKEN | Should -BeExactly "${Prefix}abc"
-            $r.Stdout | Should -Not -Match 'does not look like'
         }
 
-        It 'warns about, but still uses, an unrecognised token' {
-            $r = Invoke-AskCopilot '& $S hi' -Env @{ STUB_TOKEN = 'something_else' }
-            $r.Stdout | Should -Match 'Token does not look like a GitHub fine-grained PAT'
-            $r.Copilot.env.COPILOT_GITHUB_TOKEN | Should -BeExactly 'something_else'
+        It 'refuses <Case> before probing or running Copilot' -ForEach @(
+            @{ Case = 'an unrecognised token'; Token = 'something_else' }
+            @{ Case = 'a token with a space in it'; Token = 'github_pat_abc def' }
+            @{ Case = 'a prefix in the wrong case'; Token = 'GITHUB_PAT_abc' }
+        ) {
+            $r = Invoke-AskCopilot '& $S hi' -Env @{ STUB_TOKEN = $Token }
+            $r.Stdout | Should -Match 'EXCEPTION: The token is not a GitHub fine-grained personal access token'
+            $r.Stdout | Should -Not -Match ([regex]::Escape($Token.Trim()))
+            $r.CopilotHelpRan | Should -BeFalse
+            $r.Copilot | Should -BeNullOrEmpty
+        }
+
+        It 'checks the token before asking for the question' {
+            $r = Invoke-AskCopilot '& $S' -Env @{ STUB_TOKEN = 'ghp_classic' }
+            $r.Stdout | Should -Match 'EXCEPTION: Classic PATs \(ghp_\) are rejected'
         }
     }
 
@@ -392,6 +423,15 @@ Describe 'Authentication' {
         It 'fails when no vault is given and none is the default' {
             $r = Invoke-AskCopilot '& $S -SecretName CopilotToken hi' -Env @{ ASK_COPILOT_OP_REF = $null }
             $r.Stdout | Should -Match 'EXCEPTION: No SecretManagement vault specified and no default vault is registered'
+        }
+
+        It 'fails before probing Copilot when SecretManagement is not installed' {
+            $r = Invoke-AskCopilot '& $S -SecretName CopilotToken -Vault Remote hi' -Env @{
+                ASK_COPILOT_OP_REF = $null; PSModulePath = Join-Path $PSHOME 'Modules'
+            }
+            $r.Stdout | Should -Match 'EXCEPTION: -SecretName needs the Microsoft.PowerShell.SecretManagement module'
+            $r.CopilotHelpRan | Should -BeFalse
+            $r.Copilot | Should -BeNullOrEmpty
         }
 
         It 'rejects a secret that is not a string, SecureString or PSCredential' {
@@ -585,9 +625,19 @@ Describe 'glow' {
             $r.Stdout | Should -Match 'PIPELINE_EMPTY=True'
         }
 
-        It 'warns and emits raw Markdown for -Glow on when glow is missing' {
-            $r = Invoke-AskCopilot '& $S -Glow on hi'
-            $r.Stdout | Should -Match 'glow not found on PATH; showing raw Markdown'
+        It 'fails before reading the token for <Case> when glow is missing' -ForEach @(
+            @{ Case = '-Glow on'; Command = '& $S -Glow on hi'; Env = @{} }
+            @{ Case = 'ASK_COPILOT_GLOW=on'; Command = '& $S hi'; Env = @{ ASK_COPILOT_GLOW = 'on' } }
+        ) {
+            $r = Invoke-AskCopilot $Command -Env $Env
+            $r.Stdout | Should -Match 'EXCEPTION: -Glow on \(or ASK_COPILOT_GLOW=on\) needs glow, which was not found on PATH'
+            $r.Op | Should -BeNullOrEmpty
+            $r.Copilot | Should -BeNullOrEmpty
+        }
+
+        It 'does not need glow for <Mode>' -ForEach @(@{ Mode = 'auto' }, @{ Mode = 'off' }) {
+            $r = Invoke-AskCopilot "& `$S -Glow $Mode hi"
+            $r.ExitCode | Should -Be 0
             $r.Stdout | Should -Match '(?m)^# Answer'
         }
 

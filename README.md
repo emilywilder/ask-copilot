@@ -55,6 +55,7 @@ Create a token at <https://github.com/settings/personal-access-tokens/new>:
 | Expiration        | As short as you can tolerate            |
 
 Classic `ghp_` tokens are refused: Copilot CLI rejects them and they grant far more access than needed.
+Anything that isn't a fine-grained token (`github_pat_...`, or a `gho_`/`ghu_` OAuth token) is refused too.
 `copilot login` is never used, because it saves the token.
 
 ### 2. Choose where the token comes from
@@ -127,6 +128,16 @@ ask-copilot [-Question] <words...> [-Model <name>] -SecretName <name> [-Vault <n
 Every word after the script name is joined into one question, so quotes are optional (but still useful
 for characters PowerShell treats specially). With no question and no piped input, you are prompted for one.
 
+Before asking for the question or starting Copilot, the script checks everything the run needs, so a
+problem fails straight away:
+
+- Copilot CLI is installed (a native build on Windows).
+- The token source's tool is available: `op` for `-OpReference`/`ASK_COPILOT_OP_REF`, the SecretManagement
+  module for `-SecretName`.
+- glow is installed, if `-Glow on` (or `ASK_COPILOT_GLOW=on`) asks for it.
+- The token can be read and is a fine-grained token. Whether it has the Copilot Requests permission or has
+  expired is only known to GitHub, so Copilot reports that.
+
 Add `-Verbose` to see each step: which Copilot CLI and flags are used, where the token comes from, which
 variables are removed from Copilot's environment, and whether glow is used. `-Debug` also shows Copilot's
 arguments, with the prompt shown only by length. The token never appears in either.
@@ -171,7 +182,7 @@ PowerShell, never written to the output, and can be turned off with `$ProgressPr
 | Mode   | Behaviour                                                                                         |
 | ------ | ------------------------------------------------------------------------------------------------- |
 | `auto` | Render with glow only when glow is installed and output goes straight to the terminal. Anything piped, redirected, assigned or wrapped in `( )` gets raw Markdown. |
-| `on`   | Always render with glow on the terminal. glow draws directly on the console, so nothing goes down the pipe. |
+| `on`   | Always render with glow on the terminal. glow draws directly on the console, so nothing goes down the pipe. Fails before running anything if glow isn't installed. |
 | `off`  | Never use glow.                                                                                   |
 
 When glow is used, the answer appears once Copilot finishes rather than streaming. If glow fails, the raw

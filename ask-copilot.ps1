@@ -60,6 +60,11 @@
       Permissions > Account > Copilot Requests
       Expiration: as short as you can tolerate
 
+    Before asking for the question or starting Copilot, the script checks everything the run
+    needs: Copilot CLI, op or SecretManagement for the chosen token source, glow for -Glow on,
+    and that the token is a fine-grained PAT (classic ghp_ tokens are refused). Whether the token
+    has the Copilot Requests permission or has expired is only known to GitHub; Copilot reports that.
+
 .PARAMETER Question
     The question. Every word after the script name is joined into one question, so quotes are optional.
 
@@ -87,7 +92,8 @@
     Render the Markdown answer with glow: auto (default), on or off.
       auto  use glow if it is installed and the output is going straight to the terminal
       on    always render with glow on the terminal, even when piped or captured
-            (glow draws directly on the console, so nothing is sent down the pipe)
+            (glow draws directly on the console, so nothing is sent down the pipe);
+            fails before running anything if glow is not installed
       off   never use glow; always emit raw Markdown
     Set a default with $env:ASK_COPILOT_GLOW. While glow is used the answer appears when
     Copilot finishes rather than streaming.
@@ -253,8 +259,11 @@ begin {
         if ($Mode -eq 'off') { Write-Verbose 'glow: off; emitting raw Markdown.'; return }
         $glowPath = Resolve-GlowExecutable
         if (-not $glowPath) {
-            if ($Mode -eq 'on') { Write-Warning 'glow not found on PATH; showing raw Markdown.' }
-            else { Write-Verbose 'glow: not found on PATH; emitting raw Markdown.' }
+            if ($Mode -eq 'on') {
+                throw ('-Glow on (or ASK_COPILOT_GLOW=on) needs glow, which was not found on PATH. ' +
+                       'Install it (https://github.com/charmbracelet/glow) or use -Glow auto or off.')
+            }
+            Write-Verbose 'glow: not found on PATH; emitting raw Markdown.'
             return
         }
         if ($Mode -eq 'auto' -and -not (Test-OutputToTerminal $Invocation)) {
@@ -397,6 +406,10 @@ begin {
     }
 
     function Get-SecretVaultToken([string] $Name, [string] $VaultName) {
+        if (-not (Get-Module -ListAvailable -Name Microsoft.PowerShell.SecretManagement)) {
+            throw ('-SecretName needs the Microsoft.PowerShell.SecretManagement module, which is not installed. ' +
+                   'Install it with: Install-PSResource Microsoft.PowerShell.SecretManagement')
+        }
         Import-Module Microsoft.PowerShell.SecretManagement -ErrorAction Stop
         $vaultInfo = if ($VaultName) { Get-SecretVault -Name $VaultName } else {
             Get-SecretVault | Where-Object IsDefault | Select-Object -First 1
@@ -429,6 +442,34 @@ begin {
         try { [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr) }
         finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) }
     }
+
+    # Refuses a token Copilot can't or shouldn't use. Only its form can be checked here: whether it has
+    # the Copilot Requests permission or has expired is known only to GitHub, so Copilot reports that.
+    function Assert-CopilotToken([securestring] $Secure) {
+        $plain = ConvertFrom-SecureToken $Secure
+        try {
+            if ($plain.StartsWith('ghp_')) {
+                throw 'Classic PATs (ghp_) are rejected by Copilot CLI and grant far more access than needed. Use a fine-grained token with only Copilot Requests.'
+            }
+            if ($plain -cnotmatch '^(github_pat_|gho_|ghu_)[A-Za-z0-9_]+$') {
+                throw ('The token is not a GitHub fine-grained personal access token (github_pat_...). Create one with only the ' +
+                       'Copilot Requests permission at https://github.com/settings/personal-access-tokens/new')
+            }
+        }
+        finally { $plain = $null }
+    }
+
+    # ---- Dependency checks -----------------------------------------------------------------
+
+    # Everything a run depends on is checked now, before the question is read or Copilot is started:
+    # Copilot CLI, glow when -Glow on asks for it, the token source's tool (op or SecretManagement),
+    # and the token itself. A missing tool or an unusable token fails here, not after typing a question.
+    $exe = Resolve-CopilotExecutable
+    Write-Verbose "Copilot CLI: $exe"
+    $glowPath = Get-GlowPath $glowMode $invocation
+    $secureToken = Get-CopilotToken -ParameterSet $PSCmdlet.ParameterSetName -OpReference $OpReference -SecretName $SecretName -Vault $Vault
+    try { Assert-CopilotToken $secureToken }
+    catch { $secureToken.Dispose(); throw }
 }
 
 process {
@@ -445,9 +486,6 @@ end {
     $prompt = New-CopilotPrompt $q $context
     Write-Verbose "Question: $($q.Length) characters; piped context: $($context.Length) characters."
 
-    $glowPath = Get-GlowPath $glowMode $invocation
-    $exe = Resolve-CopilotExecutable
-    Write-Verbose "Copilot CLI: $exe"
     $cliArgs = New-CopilotArgumentList $exe $prompt $Model
 
     $root = Join-Path ([IO.Path]::GetTempPath()) ("ask-copilot-" + [guid]::NewGuid().ToString('N'))
@@ -457,15 +495,6 @@ end {
     $proc = $null
     $token = $null
     try {
-        $secureToken = Get-CopilotToken -ParameterSet $PSCmdlet.ParameterSetName -OpReference $OpReference -SecretName $SecretName -Vault $Vault
-        $token = ConvertFrom-SecureToken $secureToken
-        if ($token.StartsWith('ghp_')) {
-            throw 'Classic PATs (ghp_) are rejected by Copilot CLI and grant far more access than needed. Use a fine-grained token with only Copilot Requests.'
-        }
-        if (-not ($token.StartsWith('github_pat_') -or $token.StartsWith('ghu_') -or $token.StartsWith('gho_'))) {
-            Write-Warning 'Token does not look like a GitHub fine-grained PAT (github_pat_...). Trying anyway.'
-        }
-
         $null = New-Item -ItemType Directory -Path $copilotHome, $workDir -Force
 
         $psi = [System.Diagnostics.ProcessStartInfo]::new($exe)
@@ -476,6 +505,7 @@ end {
         $psi.RedirectStandardOutput = $true
         $psi.StandardOutputEncoding = [System.Text.UTF8Encoding]::new($false)
         Initialize-CopilotEnvironment $psi $copilotHome
+        $token = ConvertFrom-SecureToken $secureToken
         $psi.Environment['COPILOT_GITHUB_TOKEN'] = $token
 
         $proc = [System.Diagnostics.Process]::Start($psi)
@@ -514,6 +544,7 @@ end {
     }
     finally {
         $token = $null
+        $secureToken.Dispose()
         if ($proc -and -not $proc.HasExited) { try { $proc.Kill($true) } catch { } }
         if ($proc) { $proc.Dispose() }
         Remove-CopilotTempDirectory $root

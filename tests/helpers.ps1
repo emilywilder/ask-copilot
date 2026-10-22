@@ -72,6 +72,7 @@ function Invoke-AskCopilot {
         [hashtable] $Env = @{},
         [switch] $WithGlow,
         [switch] $WithoutCopilot,
+        [switch] $WithoutOp,
         [string[]] $PrependPath = @(),
         [switch] $Terminal
     )
@@ -95,7 +96,7 @@ exit `$LASTEXITCODE
 
     $path = @($PrependPath) +
         @(if (-not $WithoutCopilot) { $StubTools.CopilotBin }) +
-        @($StubTools.OpBin) +
+        @(if (-not $WithoutOp) { $StubTools.OpBin }) +
         @(if ($WithGlow) { $StubTools.GlowBin }) +
         @($PSHOME) + $StubTools.SystemPath
 
@@ -179,6 +180,7 @@ exit `$LASTEXITCODE
             Stdout           = if ($stdoutTask) { $stdoutTask.Result } else { $null }
             Stderr           = if ($stderrTask) { $stderrTask.Result } else { $null }
             Copilot          = Read-StubLog $logs 'copilot'
+            CopilotHelpRan   = Test-Path -LiteralPath (Join-Path $logs 'copilot-help.txt')
             Op               = Read-StubLog $logs 'op'
             Glow             = Read-StubLog $logs 'glow'
             Secret           = Read-StubLog $logs 'secret'

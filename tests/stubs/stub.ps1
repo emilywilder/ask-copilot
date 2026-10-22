@@ -29,6 +29,8 @@ function Get-StubExitCode([string] $Value) {
 switch ($Role) {
     'copilot' {
         if ($stubArgs -contains '--help') {
+            # Recorded separately, so tests can tell the flag probe ran even when Copilot itself didn't.
+            [System.IO.File]::WriteAllText((Join-Path $env:STUB_LOG_DIR 'copilot-help.txt'), '')
             # STUB_HELP: 'full' (default), 'noprompt' (no --prompt flag) or 'minimal' (no optional flags).
             $flags = @('-p <text>', '--silent', '--no-ask-user', '--no-custom-instructions', '--deny-tool <tools>', '--model <model>')
             if ($env:STUB_HELP -ne 'noprompt') { $flags += '--prompt <text>' }
