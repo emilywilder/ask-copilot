@@ -1,7 +1,8 @@
 name: CI
 
 # Lint and test every push and pull request. Pushing a v* tag also publishes a GitHub release with
-# ask-copilot.ps1, its SHA-256 checksum and a signed build-provenance attestation.
+# ask-copilot.ps1, its SHA-256 checksum and a signed build-provenance attestation, then publishes the
+# same file to the PowerShell Gallery. The tag must match the script's .VERSION.
 
 on:
   push:
@@ -101,6 +102,18 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Check the script version matches the tag
+        shell: pwsh
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          $version = [regex]::Match((Get-Content ./ask-copilot.ps1 -Raw), '(?m)^\.VERSION\s+(\S+)\s*$').Groups[1].Value
+          if ("v$version" -cne $env:TAG) {
+              "::error file=ask-copilot.ps1,title=Version mismatch::.VERSION is '$version' but the tag is '$env:TAG'"
+              exit 1
+          }
+          "Version $version matches $env:TAG"
+
       - name: Compute checksum
         run: sha256sum ask-copilot.ps1 > ask-copilot.ps1.sha256
 
@@ -115,3 +128,63 @@ jobs:
           GH_REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
         run: gh release create "$TAG" ask-copilot.ps1 ask-copilot.ps1.sha256 --verify-tag --generate-notes --title "$TAG"
+
+  publish:
+    name: Publish to PowerShell Gallery
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # The Gallery API key lives in 1Password and is read with a service account whose token is a secret
+    # of the psgallery environment, so only this job can read it, and the environment's protection rules
+    # (required reviewers, tag restrictions) apply before it runs. PSGALLERY_API_KEY_REF, an environment
+    # variable, holds the key's op:// secret reference.
+    environment:
+      name: psgallery
+      url: https://www.powershellgallery.com/packages/ask-copilot
+    permissions:
+      contents: read
+      attestations: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Verify the build-provenance attestation
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh attestation verify ask-copilot.ps1 --repo "$GITHUB_REPOSITORY"
+
+      - name: Check the 1Password settings
+        env:
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+          PSGALLERY_API_KEY_REF: ${{ vars.PSGALLERY_API_KEY_REF }}
+        run: |
+          status=0
+          if [ -z "$OP_SERVICE_ACCOUNT_TOKEN" ]; then
+            echo '::error::The OP_SERVICE_ACCOUNT_TOKEN secret is not set in the psgallery environment.'
+            status=1
+          fi
+          case "$PSGALLERY_API_KEY_REF" in
+            op://*) ;;
+            *) echo '::error::The PSGALLERY_API_KEY_REF variable of the psgallery environment must be an op:// secret reference.'
+               status=1 ;;
+          esac
+          exit $status
+
+      # The key is a masked step output, not an environment variable, so only the Publish step sees it.
+      - name: Load the Gallery API key from 1Password
+        id: op
+        uses: 1password/load-secrets-action@70062d7a876d3eb6334754fa26efd2fbd90c32f2 # v5.0.1
+        with:
+          export-env: false
+        env:
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+          PSGALLERY_API_KEY: ${{ vars.PSGALLERY_API_KEY_REF }}
+
+      - name: Publish
+        shell: pwsh
+        env:
+          PSGALLERY_API_KEY: ${{ steps.op.outputs.PSGALLERY_API_KEY }}
+        run: |
+          Publish-PSResource -Path ./ask-copilot.ps1 -Repository PSGallery -ApiKey $env:PSGALLERY_API_KEY

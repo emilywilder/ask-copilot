@@ -26,6 +26,19 @@ Describe 'Script file' {
         $errors | Should -BeNullOrEmpty
     }
 
+    It 'has valid PowerShell Gallery metadata' {
+        Test-PSScriptFileInfo -Path $AskCopilot | Should -BeTrue
+        $text = Get-Content -LiteralPath $AskCopilot -Raw
+        $text | Should -Match '(?m)^\.VERSION \d+\.\d+\.\d+\s*$'
+        $text | Should -Match '(?m)^\.GUID [0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\s*$'
+        $text | Should -Match '(?m)^\.PROJECTURI https://github\.com/emilywilder/ask-copilot\s*$'
+        $text | Should -Match '(?m)^\.LICENSEURI https://github\.com/emilywilder/ask-copilot/blob/main/LICENSE\s*$'
+    }
+
+    It 'keeps the shebang on the first line' {
+        (Get-Content -LiteralPath $AskCopilot -TotalCount 1) | Should -BeExactly '#!/usr/bin/env pwsh'
+    }
+
     It 'has comment-based help that Get-Help recognises' {
         (Get-Help $AskCopilot).Synopsis | Should -BeLike 'Ask GitHub Copilot a question from the terminal*'
     }

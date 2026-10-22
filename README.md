@@ -1,6 +1,7 @@
 # ask-copilot
 
 [![CI](https://github.com/emilywilder/ask-copilot/actions/workflows/ci.yml/badge.svg)](https://github.com/emilywilder/ask-copilot/actions/workflows/ci.yml)
+[![PowerShell Gallery](https://img.shields.io/powershellgallery/v/ask-copilot)](https://www.powershellgallery.com/packages/ask-copilot)
 
 Ask GitHub Copilot a question from the terminal, with Copilot locked down so it can only answer.
 
@@ -81,9 +82,19 @@ The local `Microsoft.PowerShell.SecretStore` vault is refused because it saves s
 `op run` is not supported: the script strips environment variables from Copilot's environment, which would
 remove the one `op run` injects.
 
-### 3. Download and verify
+### 3. Install
 
-Download `ask-copilot.ps1` and `ask-copilot.ps1.sha256` from the
+**From the PowerShell Gallery** (PowerShell 7.4+ includes `Install-PSResource`):
+
+```powershell
+Install-PSResource -Name ask-copilot
+```
+
+`Update-PSResource -Name ask-copilot` upgrades it later. The script is installed into your PowerShell
+`Scripts` folder; `(Get-InstalledPSResource -Name ask-copilot).InstalledLocation` shows where. Gallery
+releases are published by CI from the same file as the GitHub release, after verifying its attestation.
+
+**Or download it** with its checksum from the
 [latest release](https://github.com/emilywilder/ask-copilot/releases/latest). Every release is built by
 GitHub Actions with a signed build-provenance attestation, so you can check the script came from this
 repository's CI:
@@ -100,7 +111,7 @@ or compare the checksum:
 
 ### 4. Put it on your PATH
 
-Put `ask-copilot.ps1` in a directory on your `PATH`, or add an alias to your profile:
+Make sure the folder holding `ask-copilot.ps1` is on your `PATH`, or add an alias to your profile:
 
 ```powershell
 Set-Alias ask-copilot C:\path\to\ask-copilot.ps1
@@ -196,12 +207,19 @@ runs the script in a fresh `pwsh` with its own `PATH`, `TEMP` and environment.
 - **Lint:** PSScriptAnalyzer with [`PSScriptAnalyzerSettings.psd1`](PSScriptAnalyzerSettings.psd1), which
   lists the rules that are excluded and why.
 - **Test:** the Pester suite on Windows and Ubuntu; JUnit results are uploaded as artifacts.
-- **Release:** pushing a `v*` tag (for example `git tag v1.0.0 && git push origin v1.0.0`) runs lint and
-  tests, then publishes a GitHub release with `ask-copilot.ps1`, its SHA-256 checksum, generated release
-  notes and a build-provenance attestation.
+- **Release:** pushing a `v*` tag runs lint and tests, checks the tag matches the script's `.VERSION`,
+  then publishes a GitHub release with `ask-copilot.ps1`, its SHA-256 checksum, generated release notes
+  and a build-provenance attestation.
+- **Publish:** after the release, a job in the `psgallery` environment verifies the attestation of the file
+  it is about to upload, reads the Gallery API key from 1Password with a service account, and publishes the
+  file to the PowerShell Gallery. The environment holds the service account token (`OP_SERVICE_ACCOUNT_TOKEN`
+  secret) and the key's `op://` reference (`PSGALLERY_API_KEY_REF` variable).
+
+To release, set `.VERSION` in the `<#PSScriptInfo#>` block at the top of `ask-copilot.ps1`, commit, then
+tag that commit with the same version: `git tag -a v1.2.0 -m v1.2.0 && git push origin v1.2.0`.
 
 Actions are pinned to commit SHAs and kept current by Dependabot. The workflow token is read-only except
-in the release job.
+in the release job, and the Gallery API key is only available to the publish job.
 
 ## License
 

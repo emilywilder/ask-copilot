@@ -1,4 +1,24 @@
 #!/usr/bin/env pwsh
+<#PSScriptInfo
+
+.VERSION 1.1.1
+
+.GUID 362db59e-edbe-4502-8df7-4e7b1c8a0934
+
+.AUTHOR Emily Lockhart
+
+.COPYRIGHT (c) 2026 Emily Lockhart. MIT License.
+
+.TAGS Copilot GitHubCopilot GitHub AI CLI Markdown glow 1Password PSEdition_Core Windows Linux
+
+.LICENSEURI https://github.com/emilywilder/ask-copilot/blob/main/LICENSE
+
+.PROJECTURI https://github.com/emilywilder/ask-copilot
+
+.RELEASENOTES https://github.com/emilywilder/ask-copilot/releases
+
+#>
+
 #Requires -Version 7.2
 
 <#
